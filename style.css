@@ -1,1 +1,170 @@
-/* Placeholder for TT-Agent-Plus-727 extension styles. */
+:root {
+  --ttap-bg: #f8faf9;
+  --ttap-panel: #ffffff;
+  --ttap-text: #17201d;
+  --ttap-muted: #60706a;
+  --ttap-border: rgba(23, 32, 29, 0.14);
+  --ttap-accent: #12796f;
+  --ttap-danger: #b42318;
+}
+
+html[data-theme="dark"],
+body.darkMode {
+  --ttap-bg: #111715;
+  --ttap-panel: #171f1c;
+  --ttap-text: #edf5f1;
+  --ttap-muted: #a9b8b2;
+  --ttap-border: rgba(237, 245, 241, 0.16);
+  --ttap-accent: #35b8a8;
+  --ttap-danger: #ff8a7a;
+}
+
+.tt-agent-plus-727-menu-item {
+  align-items: center;
+  cursor: pointer;
+}
+
+.ttap-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2999;
+  background: rgba(0, 0, 0, 0.28);
+  opacity: 1;
+  transition: opacity 240ms ease;
+}
+
+.ttap-backdrop[hidden] {
+  display: none;
+}
+
+.ttap-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 3000;
+  width: min(420px, calc(100vw - 16px));
+  height: 100dvh;
+  background: var(--ttap-panel);
+  color: var(--ttap-text);
+  border-left: 1px solid var(--ttap-border);
+  box-shadow: -12px 0 28px rgba(0, 0, 0, 0.22);
+  transform: translateX(102%);
+  opacity: 0.98;
+  transition: transform 260ms ease, opacity 220ms ease;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+}
+
+.ttap-panel[data-open="true"] {
+  transform: translateX(0);
+  opacity: 1;
+}
+
+.ttap-header {
+  min-height: 52px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--ttap-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ttap-icon-button {
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--ttap-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ttap-text);
+}
+
+.ttap-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--ttap-border);
+}
+
+.ttap-tab {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ttap-muted);
+}
+
+.ttap-tab[aria-selected="true"] {
+  border-color: color-mix(in srgb, var(--ttap-accent), transparent 54%);
+  color: var(--ttap-text);
+  background: color-mix(in srgb, var(--ttap-accent), transparent 88%);
+}
+
+.ttap-body {
+  min-width: 0;
+  overflow: auto;
+  padding: 12px;
+  background: var(--ttap-bg);
+}
+
+.ttap-metrics,
+.ttap-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ttap-metric,
+.ttap-card {
+  border: 1px solid var(--ttap-border);
+  border-radius: 8px;
+  background: var(--ttap-panel);
+  padding: 10px;
+}
+
+.ttap-metric span,
+.ttap-empty,
+.ttap-status-line {
+  color: var(--ttap-muted);
+}
+
+.ttap-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ttap-accent), transparent 86%);
+  color: var(--ttap-accent);
+  font-size: 12px;
+}
+
+.ttap-error {
+  color: var(--ttap-danger);
+}
+
+.ttap-debug-list {
+  padding-left: 20px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+}
+
+@media (max-width: 520px) {
+  .ttap-panel {
+    width: calc(100vw - 10px);
+  }
+
+  .ttap-metrics,
+  .ttap-settings-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ttap-backdrop,
+  .ttap-panel {
+    transition: none;
+  }
+}

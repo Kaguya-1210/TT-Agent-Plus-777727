@@ -1,0 +1,11 @@
+{
+  "display_name": "TT-Agent-Plus-727",
+  "loading_order": 50,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "Kaguya-1210",
+  "version": "0.1.0",
+  "homePage": "https://github.com/Kaguya-1210/TT-Agent-Plus-777727"
+}

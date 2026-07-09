@@ -1,0 +1,11 @@
+{
+  "name": "tt-agent-plus-777727",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TT-Agent-Plus-727 SillyTavern/TauriTavern extension for AIRP worker orchestration.",
+  "scripts": {
+    "test": "node --test tests",
+    "check": "node --test tests"
+  }
+}

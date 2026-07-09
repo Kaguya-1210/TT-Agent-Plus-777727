@@ -209,6 +209,33 @@ test('repeated startup registers slash parser once', async () => {
   assert.equal(commands[0].name, '777');
 });
 
+test('slash callback opens latest app after repeated startup', async () => {
+  const commands = [];
+  const windowRef = createWindowRef();
+  const slashParser = {
+    addCommandObject(command) {
+      commands.push(command);
+    }
+  };
+
+  const first = await startTtAgentPlus727(windowRef, {
+    autoMount: false,
+    getContext: () => ({ extensionSettings: {} }),
+    slashParser
+  });
+  const second = await startTtAgentPlus727(windowRef, {
+    autoMount: false,
+    getContext: () => ({ extensionSettings: {} }),
+    slashParser
+  });
+
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].callback(), '');
+  assert.equal(first.state.panel.open, false);
+  assert.equal(second.state.panel.open, true);
+  assert.equal(second.state.panel.activeTab, 'overview');
+});
+
 test('app state getter returns an isolated snapshot', async () => {
   const app = await startTtAgentPlus727(createWindowRef(), {
     autoMount: false,
@@ -223,6 +250,20 @@ test('app state getter returns an isolated snapshot', async () => {
   assert.equal(app.state.panel.open, false);
   assert.equal(app.state.settings.enabled, true);
   assert.ok(app.state.tabs.length > 0);
+});
+
+test('state snapshot helper synthesizes tasks without syncing internal state', async () => {
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => ({ extensionSettings: {} })
+  });
+
+  app.dispatcher.enqueue({ id: 'snapshot-task', depth: 0, sourceRefs: [] });
+
+  const snapshot = app.getStateSnapshot();
+
+  assert.deepEqual(snapshot.tasks.map((task) => task.id), ['snapshot-task']);
+  assert.doesNotMatch(app.getStateSnapshot.toString(), /syncDerivedState/);
 });
 
 test('exportDebug tolerates missing browser download APIs', async () => {

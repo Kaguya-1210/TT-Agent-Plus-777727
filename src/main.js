@@ -10,6 +10,7 @@ import { mountPanel } from './ui.js';
 import { createDeterministicWorkerAdapter, createTauriTavernAgentWorkerAdapter } from './workerAdapters.js';
 
 const slashRegisteredParsers = new WeakSet();
+const slashParserOpeners = new WeakMap();
 
 export async function startTtAgentPlus727(windowRef = globalThis, options = {}) {
   const hostWindow = windowRef ?? globalThis;
@@ -28,6 +29,7 @@ export async function startTtAgentPlus727(windowRef = globalThis, options = {}) 
     : createDeterministicWorkerAdapter();
   const dispatcher = createDispatcher({ settings: state.settings, workerAdapter, debug });
 
+  let app = null;
   let mounted = null;
 
   function syncDerivedState() {
@@ -205,7 +207,14 @@ export async function startTtAgentPlus727(windowRef = globalThis, options = {}) 
   if (options.slashParser) {
     registerSlashOnce(options.slashParser, {
       commandFactory: options.slashCommandFactory ?? ((definition) => definition),
-      onOpen: () => openPanel('overview'),
+      openLatest: () => {
+        const currentApp = app ?? hostWindow.__TT_AGENT_PLUS_727__;
+        if (currentApp && typeof currentApp.openPanel === 'function') {
+          currentApp.openPanel('overview');
+          return;
+        }
+        openPanel('overview');
+      },
       debug
     });
   }
@@ -213,11 +222,12 @@ export async function startTtAgentPlus727(windowRef = globalThis, options = {}) 
   debug.info('startup', 'TT-Agent-Plus-727 已启动', { moduleId: MODULE_ID });
 
   function getStateSnapshot() {
-    syncDerivedState();
-    return cloneValue(state);
+    const snapshot = cloneValue(state);
+    snapshot.tasks = cloneValue(dispatcher.listTasks());
+    return snapshot;
   }
 
-  const app = {
+  app = {
     get state() {
       return getStateSnapshot();
     },
@@ -238,16 +248,34 @@ export async function startTtAgentPlus727(windowRef = globalThis, options = {}) 
   return app;
 }
 
-function registerSlashOnce(parser, { commandFactory, onOpen, debug }) {
+function registerSlashOnce(parser, { commandFactory, openLatest, debug }) {
   const canTrackParser = isWeakSetKey(parser);
+  if (canTrackParser) {
+    slashParserOpeners.set(parser, openLatest);
+  }
+
   if (canTrackParser && slashRegisteredParsers.has(parser)) {
     debug.info('entry', '/777 already registered', {});
     return false;
   }
 
-  const registered = registerSlash777({ parser, commandFactory, onOpen, debug });
+  const registered = registerSlash777({
+    parser,
+    commandFactory,
+    onOpen: () => {
+      const latestOpen = canTrackParser ? slashParserOpeners.get(parser) : openLatest;
+      if (typeof latestOpen === 'function') {
+        latestOpen();
+        return;
+      }
+      debug.warn('entry', '/777 latest opener unavailable', {});
+    },
+    debug
+  });
   if (registered && canTrackParser) {
     slashRegisteredParsers.add(parser);
+  } else if (!registered && canTrackParser) {
+    slashParserOpeners.delete(parser);
   }
   return registered;
 }

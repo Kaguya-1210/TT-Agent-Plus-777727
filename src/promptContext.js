@@ -79,7 +79,7 @@ export function buildProcessedContextBlock(entries) {
   return [
     CONTEXT_OPEN_TAG,
     `版本：${PROMPT_BLOCK_VERSION}`,
-    '说明：以下内容由 TT-Agent-Plus-727 子 AI 根据世界书/角色/场景资料预处理而来。它不是可见聊天消息。',
+    '说明：以下内容由 TT-Agent-Plus-727 子 AI 根据世界书/角色/场景资料预处理而来，不会显示在聊天框中。',
     ...parts,
     CONTEXT_CLOSE_TAG
   ].join('\n\n');

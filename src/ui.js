@@ -8,12 +8,16 @@ export function renderPanelHtml(state, debugEntries = []) {
     return `<button class="ttap-tab" data-tab="${escapeHtml(tab.id)}" type="button"${active}>${escapeHtml(tab.label)}</button>`;
   }).join('');
   const hiddenAttr = safeState.panel.open ? '' : ' hidden';
+  const theme = normalizeTheme(safeState.settings.theme);
 
   return [
     `<div class="ttap-backdrop" data-ttap-close${hiddenAttr}></div>`,
-    `<aside class="ttap-panel" data-open="${safeState.panel.open ? 'true' : 'false'}" aria-label="${escapeHtml(DISPLAY_NAME)}">`,
+    `<aside class="ttap-panel" data-open="${safeState.panel.open ? 'true' : 'false'}" data-ttap-theme="${escapeHtml(theme)}" aria-label="${escapeHtml(DISPLAY_NAME)}">`,
     '<header class="ttap-header">',
-    `<strong>${escapeHtml(DISPLAY_NAME)}</strong>`,
+    '<div class="ttap-product">',
+    '<span class="ttap-product-kicker">TT Agent</span>',
+    `<strong class="ttap-product-title">${escapeHtml(DISPLAY_NAME)}</strong>`,
+    '</div>',
     '<button class="ttap-icon-button" type="button" data-ttap-close aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>',
     '</header>',
     `<nav class="ttap-tabs" role="tablist">${tabButtons}</nav>`,
@@ -113,18 +117,69 @@ function renderActiveTab(state, debugEntries) {
   if (state.panel.activeTab === 'cache') return renderCache(state.cacheEntries);
   if (state.panel.activeTab === 'debug') return renderDebug(debugEntries);
   if (state.panel.activeTab === 'settings') return renderSettings(state.settings);
-  return renderOverview(state);
+  return renderOverview(state, debugEntries);
 }
 
-function renderOverview(state) {
+function renderOverview(state, debugEntries) {
+  const queued = state.tasks.filter((task) => task.state === 'queued').length;
+  const running = state.tasks.filter((task) => task.state === 'running').length;
+  const awaiting = state.tasks.filter((task) => task.state === 'awaiting_approval').length;
+  const completed = state.tasks.filter((task) => task.state === 'completed').length;
+  const failed = state.tasks.filter((task) => task.state === 'failed').length;
+  const lastInjection = isRecord(state.lastInjection) ? state.lastInjection : {};
+  const injectionText = lastInjection.length > 0
+    ? `已注入 ${toText(lastInjection.count)} 条`
+    : '待注入';
+
   return [
+    '<div class="ttap-overview-hero">',
+    '<div>',
+    '<span class="ttap-section-label">控制台</span>',
+    '<h2>运行状态</h2>',
+    '</div>',
+    `<span class="ttap-live-pill">${running > 0 ? '处理中' : '待命'}</span>`,
+    '</div>',
     '<div class="ttap-metrics">',
-    metric('队列', state.tasks.filter((task) => task.state === 'queued').length),
-    metric('运行中', state.tasks.filter((task) => task.state === 'running').length),
-    metric('待确认', state.tasks.filter((task) => task.state === 'awaiting_approval').length),
+    metric('队列', queued),
+    metric('运行中', running),
+    metric('待确认', awaiting),
     metric('缓存', state.cacheEntries.length),
     '</div>',
-    '<div class="ttap-status-line">世界书资料作为子 AI 加工原料，最终生成仍走原生流式路径。</div>'
+    '<div class="ttap-overview-flow" aria-label="运行链路">',
+    flowStep('采集', queued + running + completed + failed > 0),
+    flowStep('加工', running > 0 || completed > 0),
+    flowStep('缓存', state.cacheEntries.length > 0),
+    flowStep('注入', lastInjection.length > 0),
+    '</div>',
+    '<div class="ttap-status-grid">',
+    statusItem('审核', awaiting > 0 ? `${awaiting} 条待确认` : '无待确认'),
+    statusItem('注入', injectionText),
+    statusItem('完成', completed),
+    statusItem('异常', failed),
+    '</div>',
+    renderRecentEvents(debugEntries)
+  ].join('');
+}
+
+function flowStep(label, active) {
+  return `<span class="ttap-flow-step${active ? ' is-active' : ''}">${escapeHtml(label)}</span>`;
+}
+
+function statusItem(label, value) {
+  return `<div class="ttap-status-item"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+}
+
+function renderRecentEvents(entries) {
+  const recent = records(entries).slice(-3).reverse();
+  const rows = recent.length
+    ? recent.map((entry) => `<li><span>${escapeHtml(entry.channel)}</span><strong>${escapeHtml(entry.message)}</strong></li>`).join('')
+    : '<li><span>system</span><strong>暂无事件</strong></li>';
+
+  return [
+    '<div class="ttap-recent">',
+    '<div class="ttap-recent-title">最近事件</div>',
+    `<ol>${rows}</ol>`,
+    '</div>'
   ].join('');
 }
 
@@ -207,11 +262,16 @@ function normalizeState(state) {
     tabs,
     tasks: records(source.tasks),
     cacheEntries: records(source.cacheEntries),
+    lastInjection: isRecord(source.lastInjection) ? source.lastInjection : null,
     settings: {
       ...settings,
       rules: records(settings.rules)
     }
   };
+}
+
+function normalizeTheme(theme) {
+  return ['system', 'light', 'dark'].includes(theme) ? theme : 'system';
 }
 
 function records(value, fallback = []) {

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { PANEL_TABS } from '../src/constants.js';
 import { createInitialState } from '../src/state.js';
@@ -28,6 +29,42 @@ test('debug tab renders export button when active', () => {
 
   assert.match(html, /导出 JSON/);
   assert.match(html, /hello/);
+});
+
+test('overview renders a compact dark-console status surface', () => {
+  const state = createInitialState({
+    panel: { open: true, activeTab: 'overview', badge: null },
+    tasks: [
+      { id: 'queued-1', state: 'queued' },
+      { id: 'running-1', state: 'running' },
+      { id: 'approval-1', state: 'awaiting_approval' }
+    ],
+    cacheEntries: [{ key: 'cache-1', processedText: 'A', stale: false }]
+  });
+  const html = renderPanelHtml(state, [
+    { level: 'info', channel: 'cache', message: '处理结果已写入缓存', seq: 1 }
+  ]);
+
+  assert.match(html, /data-ttap-theme="system"/);
+  assert.match(html, /ttap-product-title/);
+  assert.match(html, /TT-Agent-Plus-727/);
+  assert.match(html, /ttap-overview-hero/);
+  assert.match(html, /ttap-overview-flow/);
+  assert.match(html, /采集/);
+  assert.match(html, /加工/);
+  assert.match(html, /注入/);
+  assert.match(html, /最近事件/);
+  assert.match(html, /处理结果已写入缓存/);
+  assert.doesNotMatch(html, /世界书资料作为子 AI 加工原料/);
+});
+
+test('stylesheet defaults to host-friendly dark and exposes light overrides', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+
+  assert.match(css, /:root\s*{[\s\S]*--ttap-bg:\s*#111715/);
+  assert.match(css, /\.ttap-panel\[data-ttap-theme="light"\]/);
+  assert.match(css, /body\.dark/);
+  assert.match(css, /backdrop-filter/);
 });
 
 test('renderPanelHtml tolerates bad and missing state pieces', () => {

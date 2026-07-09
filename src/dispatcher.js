@@ -1,5 +1,18 @@
 import { APPROVAL_MODES, TASK_STATES } from './constants.js';
 
+const DISPATCHER_OWNED_FIELDS = [
+  'state',
+  'approved',
+  'createdAt',
+  'startedAt',
+  'completedAt',
+  'cancelledAt',
+  'approvalRequestedAt',
+  'approvedAt',
+  'result',
+  'error'
+];
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -36,13 +49,16 @@ export function createDispatcher({ settings, workerAdapter, debug }) {
     }
 
     const task = {
-      parentTaskId: null,
-      modelProfileId: 'current',
-      state: TASK_STATES.QUEUED,
-      createdAt: nowIso(),
-      approved: false,
-      ...input
+      ...input,
+      parentTaskId: input.parentTaskId ?? null,
+      modelProfileId: input.modelProfileId ?? 'current'
     };
+    for (const field of DISPATCHER_OWNED_FIELDS) {
+      delete task[field];
+    }
+    task.state = TASK_STATES.QUEUED;
+    task.createdAt = nowIso();
+    task.approved = false;
     tasks.set(task.id, task);
     debug?.info('dispatcher', '任务进入队列', { taskId: task.id });
     return cloneTask(task);
@@ -59,15 +75,13 @@ export function createDispatcher({ settings, workerAdapter, debug }) {
 
   function approve(id) {
     const task = tasks.get(id);
-    if (!task || task.state === TASK_STATES.COMPLETED || task.state === TASK_STATES.FAILED || task.state === TASK_STATES.CANCELLED) {
+    if (!task || task.state !== TASK_STATES.AWAITING_APPROVAL) {
       return false;
     }
 
     task.approved = true;
     task.approvedAt = nowIso();
-    if (task.state === TASK_STATES.AWAITING_APPROVAL) {
-      task.state = TASK_STATES.QUEUED;
-    }
+    task.state = TASK_STATES.QUEUED;
     debug?.info('approval', '任务已批准', { taskId: id });
     return true;
   }
@@ -129,6 +143,7 @@ export function createDispatcher({ settings, workerAdapter, debug }) {
       return totalDispatches >= settings.dispatchConfirmThreshold;
     }
     if (settings.approvalMode === APPROVAL_MODES.PAID_API_ONLY) {
+      // Product policy: paid_api_only also confirms after the global dispatch threshold.
       return isPaidProfile(task.modelProfileId) || totalDispatches >= settings.dispatchConfirmThreshold;
     }
     return false;

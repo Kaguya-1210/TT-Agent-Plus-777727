@@ -1,3 +1,20 @@
+function cloneValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => cloneValue(item));
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cloneValue(item)]));
+  }
+  return value;
+}
+
+function cloneEntry(entry) {
+  return {
+    ...entry,
+    details: cloneValue(entry.details)
+  };
+}
+
 export function createDebugLog(now = () => new Date().toISOString()) {
   const items = [];
 
@@ -8,10 +25,10 @@ export function createDebugLog(now = () => new Date().toISOString()) {
       level,
       channel,
       message,
-      details
+      details: cloneValue(details)
     };
     items.push(entry);
-    return entry;
+    return cloneEntry(entry);
   }
 
   return {
@@ -20,7 +37,7 @@ export function createDebugLog(now = () => new Date().toISOString()) {
     info: (channel, message, details) => record('info', channel, message, details),
     warn: (channel, message, details) => record('warn', channel, message, details),
     error: (channel, message, details) => record('error', channel, message, details),
-    entries: () => items.slice(),
+    entries: () => items.map((entry) => cloneEntry(entry)),
     clear: () => {
       items.length = 0;
     },

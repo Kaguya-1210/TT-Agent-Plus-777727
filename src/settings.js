@@ -1,8 +1,14 @@
-import { APPROVAL_MODES } from './constants.js';
+import { APPROVAL_MODES, OUTPUT_MODES } from './constants.js';
 import { DEFAULT_SETTINGS } from './defaults.js';
 
 const THEMES = new Set(['system', 'light', 'dark']);
 const APPROVAL_VALUES = new Set(Object.values(APPROVAL_MODES));
+const OUTPUT_VALUES = new Set(Object.values(OUTPUT_MODES));
+const WORKER_ADAPTERS = new Set(['deterministic', 'tauritavern_agent']);
+
+function isRecord(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
 
 function clampInteger(value, fallback, min, max) {
   const number = Number(value);
@@ -10,24 +16,57 @@ function clampInteger(value, fallback, min, max) {
   return Math.min(max, Math.max(min, Math.trunc(number)));
 }
 
-function mergeRule(defaultRule, savedRule) {
-  if (!savedRule || typeof savedRule !== 'object') return defaultRule;
+function nonEmptyString(value, fallback) {
+  return typeof value === 'string' && value ? value : fallback;
+}
+
+function normalizeRule(defaultRule, savedRule) {
+  const source = isRecord(savedRule) ? savedRule : {};
   return {
-    ...defaultRule,
-    ...Object.fromEntries(Object.entries(savedRule).filter(([key]) => Object.hasOwn(defaultRule, key))),
-    id: typeof savedRule.id === 'string' && savedRule.id ? savedRule.id : defaultRule.id,
-    name: typeof savedRule.name === 'string' && savedRule.name ? savedRule.name : defaultRule.name
+    id: nonEmptyString(source.id, defaultRule.id),
+    name: nonEmptyString(source.name, defaultRule.name),
+    description: nonEmptyString(source.description, defaultRule.description),
+    systemInstruction: nonEmptyString(source.systemInstruction, defaultRule.systemInstruction),
+    outputSchema: nonEmptyString(source.outputSchema, defaultRule.outputSchema),
+    modelProfileId: nonEmptyString(source.modelProfileId, defaultRule.modelProfileId),
+    maxInputTokens: clampInteger(source.maxInputTokens, defaultRule.maxInputTokens, 1000, 200000),
+    targetOutputTokens: clampInteger(source.targetOutputTokens, defaultRule.targetOutputTokens, 100, 12000),
+    allowChildDispatch: typeof source.allowChildDispatch === 'boolean'
+      ? source.allowChildDispatch
+      : defaultRule.allowChildDispatch,
+    maxChildWorkers: clampInteger(source.maxChildWorkers, defaultRule.maxChildWorkers, 0, 8),
+    maxDepth: clampInteger(source.maxDepth, defaultRule.maxDepth, 0, 8),
+    outputMode: OUTPUT_VALUES.has(source.outputMode) ? source.outputMode : defaultRule.outputMode,
+    version: clampInteger(source.version, defaultRule.version, 1, 999)
   };
 }
 
+function mergeRules(sourceRules, defaultRules) {
+  const defaultRulesById = new Map(defaultRules.map((rule) => [rule.id, rule]));
+  const savedRules = Array.isArray(sourceRules) ? sourceRules.filter(isRecord) : [];
+  const savedDefaultRules = new Map();
+
+  for (const rule of savedRules) {
+    if (typeof rule.id === 'string' && defaultRulesById.has(rule.id)) {
+      savedDefaultRules.set(rule.id, rule);
+    }
+  }
+
+  const mergedDefaults = defaultRules.map((rule) => normalizeRule(rule, savedDefaultRules.get(rule.id)));
+  const customRules = savedRules
+    .filter((rule) => {
+      const id = nonEmptyString(rule.id, '');
+      const name = nonEmptyString(rule.name, '');
+      return id && name && !defaultRulesById.has(id);
+    })
+    .map((rule) => normalizeRule(defaultRules[0], rule));
+
+  return [...mergedDefaults, ...customRules];
+}
+
 export function mergeSettings(saved = {}) {
-  const source = saved && typeof saved === 'object' ? saved : {};
+  const source = isRecord(saved) ? saved : {};
   const defaults = DEFAULT_SETTINGS;
-  const defaultRulesById = new Map(defaults.rules.map((rule) => [rule.id, rule]));
-  const savedRules = Array.isArray(source.rules) ? source.rules : [];
-  const mergedRules = savedRules.length
-    ? savedRules.map((rule) => mergeRule(defaultRulesById.get(rule.id) ?? defaults.rules[0], rule))
-    : defaults.rules;
 
   return {
     enabled: typeof source.enabled === 'boolean' ? source.enabled : defaults.enabled,
@@ -41,14 +80,14 @@ export function mergeSettings(saved = {}) {
     maxDepth: clampInteger(source.maxDepth, defaults.maxDepth, 0, 8),
     paidApiProfileIds: Array.isArray(source.paidApiProfileIds)
       ? source.paidApiProfileIds.filter((id) => typeof id === 'string' && id)
-      : defaults.paidApiProfileIds,
+      : [...defaults.paidApiProfileIds],
     promptInjectionEnabled: typeof source.promptInjectionEnabled === 'boolean'
       ? source.promptInjectionEnabled
       : defaults.promptInjectionEnabled,
     promptBlockMaxTokens: clampInteger(source.promptBlockMaxTokens, defaults.promptBlockMaxTokens, 200, 12000),
-    workerAdapter: ['deterministic', 'tauritavern_agent'].includes(source.workerAdapter)
+    workerAdapter: WORKER_ADAPTERS.has(source.workerAdapter)
       ? source.workerAdapter
       : defaults.workerAdapter,
-    rules: mergedRules
+    rules: mergeRules(source.rules, defaults.rules)
   };
 }

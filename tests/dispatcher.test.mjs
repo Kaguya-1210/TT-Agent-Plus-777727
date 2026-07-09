@@ -62,6 +62,19 @@ async function expectFulfilledWithin(promise, timeoutMs = 80) {
   return outcome.value;
 }
 
+async function waitForTaskState(dispatcher, taskId, expectedState, timeoutMs = 80) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const task = dispatcher.getTask(taskId);
+    if (task?.state === expectedState) return task;
+    await new Promise((resolve) => {
+      setTimeout(resolve, 1);
+    });
+  }
+  const task = dispatcher.getTask(taskId);
+  throw new Error(`Timed out waiting for ${taskId} to reach ${expectedState}; current=${task?.state}`);
+}
+
 test('dispatcher starts only up to global concurrency per pump', async () => {
   const started = [];
   const gates = {
@@ -100,7 +113,46 @@ test('dispatcher starts only up to global concurrency per pump', async () => {
   assert.deepEqual(started, ['task-1', 'task-2', 'task-3']);
   gates['task-3'].resolve();
   await secondPump;
-  assert.equal(dispatcher.getTask('task-3').state, TASK_STATES.COMPLETED);
+  await expectFulfilledWithin(waitForTaskState(dispatcher, 'task-3', TASK_STATES.COMPLETED));
+});
+
+test('dispatcher automatically starts queued work when capacity frees', async () => {
+  const started = [];
+  const task2Started = deferred();
+  const gates = {
+    'task-1': deferred(),
+    'task-2': deferred()
+  };
+  const adapter = {
+    async run(task) {
+      started.push(task.id);
+      if (task.id === 'task-2') task2Started.resolve();
+      await gates[task.id].promise;
+      return { processedText: `done:${task.id}`, structuredSummary: {}, warnings: [], confidence: 'high' };
+    }
+  };
+  const dispatcher = createDispatcher({
+    settings: { globalConcurrency: 1, approvalMode: APPROVAL_MODES.OFF, maxTotalDispatches: 10, maxDepth: 2, dispatchConfirmThreshold: 5 },
+    workerAdapter: adapter,
+    debug: createDebugLog()
+  });
+
+  dispatcher.enqueue({ id: 'task-1', sourceRefs: [], ruleTemplateId: 'rule', depth: 0, tokenEstimate: 10 });
+  dispatcher.enqueue({ id: 'task-2', sourceRefs: [], ruleTemplateId: 'rule', depth: 0, tokenEstimate: 10 });
+
+  const pump = dispatcher.pump();
+  await Promise.resolve();
+  assert.deepEqual(started, ['task-1']);
+  assert.equal(dispatcher.getTask('task-2').state, TASK_STATES.QUEUED);
+
+  gates['task-1'].resolve();
+  await pump;
+  await expectFulfilledWithin(task2Started.promise);
+
+  assert.deepEqual(started, ['task-1', 'task-2']);
+  assert.equal(dispatcher.getTask('task-2').state, TASK_STATES.RUNNING);
+  gates['task-2'].resolve();
+  await expectFulfilledWithin(waitForTaskState(dispatcher, 'task-2', TASK_STATES.COMPLETED));
 });
 
 test('dispatcher queues paid api approval before running', async () => {

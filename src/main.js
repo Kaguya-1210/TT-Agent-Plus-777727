@@ -1,11 +1,13 @@
-import { createMemoryCacheDriver, createProcessedCacheStore } from './cacheStore.js';
+import { createCacheKey, createMemoryCacheDriver, createProcessedCacheStore } from './cacheStore.js';
 import { MODULE_ID } from './constants.js';
 import { createDebugLog } from './debugLog.js';
 import { createDispatcher } from './dispatcher.js';
 import { createMagicWandItem, mountMagicWandItem, registerSlash777 } from './entrypoints.js';
-import { buildProcessedContextBlock, selectRelevantCacheEntries } from './promptContext.js';
+import { hashString } from './hash.js';
+import { buildProcessedContextBlock, PROMPT_BLOCK_VERSION, selectRelevantCacheEntries } from './promptContext.js';
 import { createHostBridge } from './stBridge.js';
 import { createInitialState, updatePanel } from './state.js';
+import { estimateTokens } from './tokenEstimate.js';
 import { mountPanel } from './ui.js';
 import { createDeterministicWorkerAdapter, createTauriTavernAgentWorkerAdapter } from './workerAdapters.js';
 
@@ -78,7 +80,12 @@ export async function startTtAgentPlus727(windowRef = globalThis, options = {}) 
   const workerAdapter = state.settings.workerAdapter === 'tauritavern_agent'
     ? createTauriTavernAgentWorkerAdapter(hostWindow, debug)
     : createDeterministicWorkerAdapter();
-  const dispatcher = createDispatcher({ settings: state.settings, workerAdapter, debug });
+  const dispatcher = createDispatcher({
+    settings: state.settings,
+    workerAdapter,
+    debug,
+    onTaskCompleted: handleTaskCompleted
+  });
 
   let app = null;
   let mounted = null;
@@ -151,6 +158,24 @@ export async function startTtAgentPlus727(windowRef = globalThis, options = {}) 
     state = { ...state, lastInjection: { count: selected.length, length: block.length } };
     render();
     return block;
+  }
+
+  async function handleTaskCompleted(task) {
+    const entry = createCacheEntryFromCompletedTask(task, state.settings);
+    if (!entry) {
+      debug.warn('cache', '完成任务没有可缓存输出', { taskId: task.id });
+      return null;
+    }
+
+    try {
+      const saved = await cache.put(entry);
+      debug.info('cache', '处理结果已写入缓存', { taskId: task.id, key: saved.key, tokenEstimate: saved.tokenEstimate });
+      await refreshPromptInjection();
+      return saved;
+    } catch (error) {
+      debug.error('cache', '处理结果写入缓存失败', { taskId: task.id, error: errorMessage(error) });
+      return null;
+    }
   }
 
   async function pumpDispatcher() {
@@ -307,6 +332,44 @@ export async function startTtAgentPlus727(windowRef = globalThis, options = {}) 
   hostWindow.__TT_AGENT_PLUS_727__ = app;
   hostWindow.__TT_AGENT_PLUS_727_STARTED__ = true;
   return app;
+}
+
+function createCacheEntryFromCompletedTask(task, settings) {
+  const result = task?.result;
+  if (!result || typeof result.processedText !== 'string' || !result.processedText.trim()) {
+    return null;
+  }
+
+  const sourceRefs = Array.isArray(task.sourceRefs) ? cloneValue(task.sourceRefs) : [];
+  const rule = Array.isArray(settings?.rules)
+    ? settings.rules.find((item) => item?.id === task.ruleTemplateId)
+    : null;
+  const processedText = result.processedText;
+  const timestamp = task.completedAt ?? new Date().toISOString();
+  const tokenEstimate = Number.isFinite(result.tokenEstimate) && result.tokenEstimate >= 0
+    ? result.tokenEstimate
+    : estimateTokens(processedText);
+
+  return {
+    key: createCacheKey({
+      scopeId: task.scopeId ?? task.chatId ?? 'global',
+      sourceHash: hashString(JSON.stringify(sourceRefs)),
+      ruleTemplateId: task.ruleTemplateId ?? 'unknown-rule',
+      ruleVersion: rule?.version ?? task.ruleVersion ?? 1,
+      modelProfileId: task.modelProfileId ?? 'current',
+      promptVersion: PROMPT_BLOCK_VERSION
+    }),
+    sourceRefs,
+    processedText,
+    structuredSummary: cloneValue(result.structuredSummary ?? {}),
+    tokenEstimate,
+    confidence: typeof result.confidence === 'string' ? result.confidence : 'medium',
+    warnings: Array.isArray(result.warnings) ? cloneValue(result.warnings) : [],
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    stale: false,
+    invalidationReason: null
+  };
 }
 
 function registerSlashOnce(parser, { commandFactory, openLatest, debug }) {

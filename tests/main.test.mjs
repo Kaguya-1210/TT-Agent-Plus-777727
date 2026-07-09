@@ -89,6 +89,38 @@ test('refreshPromptInjection writes prompt through bridge when cache has an entr
   assert.equal(app.state.lastInjection.length, block.length);
 });
 
+test('completed worker task writes cache and refreshes prompt injection', async () => {
+  const prompts = [];
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => ({
+      extensionSettings: {},
+      setExtensionPrompt: (...args) => prompts.push(args)
+    }),
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+
+  app.dispatcher.enqueue({
+    id: 'worker-cache-1',
+    sourceRefs: [{ kind: 'world_info', uid: 'char-a', displayName: '角色A', content: 'A 是骑士。' }],
+    ruleTemplateId: 'airp-character-default',
+    depth: 0,
+    tokenEstimate: 10
+  });
+
+  await app.pumpDispatcher();
+
+  const entries = await app.cache.list();
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].sourceRefs[0].displayName, '角色A');
+  assert.match(entries[0].processedText, /A 是骑士/);
+  assert.equal(entries[0].stale, false);
+  assert.equal(app.state.cacheEntries.length, 1);
+  assert.equal(app.state.lastInjection.count, 1);
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0][1], /A 是骑士/);
+});
+
 test('getContext option overrides host window fallback', async () => {
   const prompts = [];
   const windowRef = createWindowRef({

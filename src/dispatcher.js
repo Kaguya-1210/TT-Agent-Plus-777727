@@ -35,10 +35,11 @@ function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function createDispatcher({ settings, workerAdapter, debug }) {
+export function createDispatcher({ settings, workerAdapter, debug, onTaskCompleted } = {}) {
   const tasks = new Map();
   const activeRuns = new Set();
   let totalDispatches = 0;
+  let autoPumpScheduled = false;
 
   function enqueue(input) {
     if (!input?.id) {
@@ -171,6 +172,7 @@ export function createDispatcher({ settings, workerAdapter, debug }) {
       task.result = await workerAdapter.run(task);
       task.state = TASK_STATES.COMPLETED;
       task.completedAt = nowIso();
+      await notifyTaskCompleted(task);
       debug?.info('dispatcher', '任务执行完成', { taskId: task.id });
     } catch (error) {
       task.state = TASK_STATES.FAILED;
@@ -179,7 +181,32 @@ export function createDispatcher({ settings, workerAdapter, debug }) {
       debug?.error('dispatcher', '任务执行失败', { taskId: task.id, error: task.error });
     } finally {
       activeRuns.delete(task.id);
+      scheduleAutoPump();
     }
+  }
+
+  async function notifyTaskCompleted(task) {
+    if (typeof onTaskCompleted !== 'function') return;
+    try {
+      await onTaskCompleted(cloneTask(task));
+    } catch (error) {
+      debug?.error('dispatcher', '任务完成回调失败', { taskId: task.id, error: errorMessage(error) });
+    }
+  }
+
+  function scheduleAutoPump() {
+    if (autoPumpScheduled) return;
+    if (!Array.from(tasks.values()).some((task) => task.state === TASK_STATES.QUEUED)) return;
+
+    autoPumpScheduled = true;
+    Promise.resolve().then(async () => {
+      autoPumpScheduled = false;
+      try {
+        await pump();
+      } catch (error) {
+        debug?.error('dispatcher', '自动续派失败', { error: errorMessage(error) });
+      }
+    });
   }
 
   return {

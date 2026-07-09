@@ -119,6 +119,33 @@ test('getContext option overrides host window fallback', async () => {
   assert.equal(prompts[0][2], 9);
 });
 
+test('missing ST context runtime logs one warning only when no context fallback exists', async () => {
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false
+  });
+
+  const warnings = app.debug.entries().filter((entry) => (
+    entry.level === 'warn'
+    && entry.channel === 'host'
+    && entry.message === 'ST context runtime 加载失败'
+  ));
+
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0].details.error, /extensions\.js|Cannot find module|ERR_MODULE_NOT_FOUND/);
+});
+
+test('explicit getContext option suppresses missing ST runtime warning', async () => {
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => ({ extensionSettings: {} })
+  });
+
+  assert.equal(app.debug.entries().some((entry) => (
+    entry.channel === 'host'
+    && entry.message === 'ST context runtime 加载失败'
+  )), false);
+});
+
 test('promptInjectionEnabled false clears prompt', async () => {
   const prompts = [];
   const app = await startTtAgentPlus727(createWindowRef(), {

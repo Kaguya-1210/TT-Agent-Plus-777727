@@ -20,7 +20,7 @@ async function loadSlashRuntime() {
     ]);
     return {
       parser: SlashCommandParser,
-      commandFactory: (definition) => SlashCommand.fromProps
+      commandFactory: (definition) => typeof SlashCommand?.fromProps === 'function'
         ? SlashCommand.fromProps(definition)
         : definition
     };
@@ -36,8 +36,8 @@ async function loadStRuntime() {
       getContext: contextModule.getContext,
       extensionPromptTypes: contextModule.extension_prompt_types
     };
-  } catch {
-    return { getContext: null, extensionPromptTypes: null };
+  } catch (error) {
+    return { getContext: null, extensionPromptTypes: null, error };
   }
 }
 
@@ -45,6 +45,9 @@ export async function startTtAgentPlus727(windowRef = globalThis, options = {}) 
   const hostWindow = windowRef ?? globalThis;
   const debug = createDebugLog();
   const stRuntime = await loadStRuntime();
+  if (stRuntime.error && typeof options.getContext !== 'function' && typeof hostWindow.getContext !== 'function') {
+    debug.warn('host', 'ST context runtime 加载失败', { error: errorMessage(stRuntime.error) });
+  }
   const bridge = createHostBridge({
     windowRef: hostWindow,
     getContext: options.getContext ?? stRuntime.getContext ?? hostWindow.getContext,

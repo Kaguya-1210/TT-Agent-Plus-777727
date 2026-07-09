@@ -29,13 +29,56 @@
 
 ## 注入
 
-1. 在控制台向 cache 写入一条 processed entry。
+1. 在控制台向 cache 写入一条 processed entry：
+
+```js
+await window.__TT_AGENT_PLUS_727__.cache.put({
+  key: 'manual-processed-1',
+  sourceRefs: [
+    {
+      kind: 'world_info',
+      uid: 'manual-character-a',
+      displayName: '角色A',
+      content: 'A 是骑士。'
+    }
+  ],
+  processedText: '【角色A】A 是骑士，会优先保护同伴。',
+  structuredSummary: {
+    facts: ['A 是骑士', 'A 会保护同伴']
+  },
+  tokenEstimate: 32,
+  confidence: 'high',
+  warnings: [],
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+  stale: false,
+  invalidationReason: null
+});
+```
+
 2. 运行 `window.__TT_AGENT_PLUS_727__.refreshPromptInjection()`。
-3. 在调试中确认 prompt 注入日志存在。
+3. 在 `调试` 标签中确认 prompt 注入日志存在。
 4. 发起普通生成，确认回复仍走原生流式路径。
 
 ## 失败软降级
 
-1. 临时移除 `#extensionsMenu` 后刷新页面。
-2. 调试中出现魔法棒入口挂载失败警告。
-3. 聊天普通生成仍可用。
+1. 在控制台运行以下临时猴补丁，模拟宿主菜单选择器失效，并在同一段脚本里重启一次扩展。脚本会在结束时恢复 `document.querySelector`，不会长期改变页面状态。
+
+```js
+const originalQuerySelector = document.querySelector.bind(document);
+document.querySelector = (selector, ...args) => {
+  if (selector === '#extensionsMenu') return null;
+  return originalQuerySelector(selector, ...args);
+};
+
+try {
+  const module = await import(`/scripts/extensions/third-party/tt-agent-plus-777727/src/main.js?manual-soft-fail=${Date.now()}`);
+  await module.startTtAgentPlus727(window);
+} finally {
+  document.querySelector = originalQuerySelector;
+}
+```
+
+2. 如果宿主使用了不同的扩展 URL 前缀，把 import 路径中的 `/scripts/extensions/third-party/tt-agent-plus-777727` 改成实际路径后重试。
+3. 打开 `调试` 标签，确认出现魔法棒入口挂载失败或 `#extensionsMenu` 不存在的警告。
+4. 聊天普通生成仍可用。

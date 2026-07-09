@@ -121,6 +121,45 @@ test('completed worker task writes cache and refreshes prompt injection', async 
   assert.match(prompts[0][1], /A 是骑士/);
 });
 
+test('completed worker cache key ignores source ref metadata noise', async () => {
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => ({
+      extensionSettings: {},
+      setExtensionPrompt: () => {}
+    }),
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  const stableSource = {
+    kind: 'world_info',
+    uid: 'char-a',
+    displayName: '角色A',
+    content: 'A 是骑士。'
+  };
+
+  app.dispatcher.enqueue({
+    id: 'stable-source-1',
+    sourceRefs: [{ ...stableSource, selectedAt: 'first-pass' }],
+    ruleTemplateId: 'airp-character-default',
+    depth: 0,
+    tokenEstimate: 10
+  });
+  await app.pumpDispatcher();
+
+  app.dispatcher.enqueue({
+    id: 'stable-source-2',
+    sourceRefs: [{ ...stableSource, selectedAt: 'second-pass' }],
+    ruleTemplateId: 'airp-character-default',
+    depth: 0,
+    tokenEstimate: 10
+  });
+  await app.pumpDispatcher();
+
+  const entries = await app.cache.list();
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].sourceRefs[0].uid, 'char-a');
+});
+
 test('getContext option overrides host window fallback', async () => {
   const prompts = [];
   const windowRef = createWindowRef({

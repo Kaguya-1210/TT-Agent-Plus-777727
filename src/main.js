@@ -3,7 +3,7 @@ import { MODULE_ID } from './constants.js';
 import { createDebugLog } from './debugLog.js';
 import { createDispatcher } from './dispatcher.js';
 import { createMagicWandItem, mountMagicWandItem, registerSlash777 } from './entrypoints.js';
-import { hashString } from './hash.js';
+import { hashSource, hashString } from './hash.js';
 import { buildProcessedContextBlock, PROMPT_BLOCK_VERSION, selectRelevantCacheEntries } from './promptContext.js';
 import { createHostBridge } from './stBridge.js';
 import { createInitialState, updatePanel } from './state.js';
@@ -353,7 +353,7 @@ function createCacheEntryFromCompletedTask(task, settings) {
   return {
     key: createCacheKey({
       scopeId: task.scopeId ?? task.chatId ?? 'global',
-      sourceHash: hashString(JSON.stringify(sourceRefs)),
+      sourceHash: hashSourceRefs(sourceRefs),
       ruleTemplateId: task.ruleTemplateId ?? 'unknown-rule',
       ruleVersion: rule?.version ?? task.ruleVersion ?? 1,
       modelProfileId: task.modelProfileId ?? 'current',
@@ -370,6 +370,10 @@ function createCacheEntryFromCompletedTask(task, settings) {
     stale: false,
     invalidationReason: null
   };
+}
+
+function hashSourceRefs(sourceRefs) {
+  return hashString(sourceRefs.map((source) => hashSource(source)).join('|'));
 }
 
 function registerSlashOnce(parser, { commandFactory, openLatest, debug }) {

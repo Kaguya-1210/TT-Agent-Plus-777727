@@ -45,6 +45,22 @@ test('slashParser option registers /777 and opens overview', async () => {
   assert.equal(app.state.panel.activeTab, 'overview');
 });
 
+test('missing dynamic slash runtime soft-fails startup with a warning', async () => {
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => ({ extensionSettings: {} })
+  });
+
+  const warning = app.debug.entries().find((entry) => (
+    entry.level === 'warn'
+    && entry.channel === 'entry'
+    && entry.message === '/777 注册失败'
+  ));
+
+  assert.ok(warning);
+  assert.match(warning.details.error, /slash-commands|Cannot find module|ERR_MODULE_NOT_FOUND/);
+});
+
 test('refreshPromptInjection writes prompt through bridge when cache has an entry', async () => {
   const prompts = [];
   const app = await startTtAgentPlus727(createWindowRef(), {
@@ -71,6 +87,36 @@ test('refreshPromptInjection writes prompt through bridge when cache has an entr
   assert.equal(prompts[0][2], 7);
   assert.equal(app.state.lastInjection.count, 1);
   assert.equal(app.state.lastInjection.length, block.length);
+});
+
+test('getContext option overrides host window fallback', async () => {
+  const prompts = [];
+  const windowRef = createWindowRef({
+    getContext: () => ({
+      extensionSettings: {
+        [SETTINGS_KEY]: { promptInjectionEnabled: false }
+      },
+      setExtensionPrompt: () => {
+        throw new Error('host fallback should not be called');
+      }
+    })
+  });
+  const app = await startTtAgentPlus727(windowRef, {
+    autoMount: false,
+    getContext: () => ({
+      extensionSettings: {},
+      setExtensionPrompt: (...args) => prompts.push(args)
+    }),
+    extensionPromptTypes: { IN_PROMPT: 9 }
+  });
+
+  await app.cache.put(createCacheEntry('entry-1'));
+  const block = await app.refreshPromptInjection();
+
+  assert.match(block, /cached result/);
+  assert.equal(app.state.settings.promptInjectionEnabled, true);
+  assert.equal(prompts.length, 1);
+  assert.equal(prompts[0][2], 9);
 });
 
 test('promptInjectionEnabled false clears prompt', async () => {

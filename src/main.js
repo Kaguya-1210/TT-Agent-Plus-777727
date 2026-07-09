@@ -12,13 +12,43 @@ import { createDeterministicWorkerAdapter, createTauriTavernAgentWorkerAdapter }
 const slashRegisteredParsers = new WeakSet();
 const slashParserOpeners = new WeakMap();
 
+async function loadSlashRuntime() {
+  try {
+    const [{ SlashCommandParser }, { SlashCommand }] = await Promise.all([
+      import('../../../../slash-commands/SlashCommandParser.js'),
+      import('../../../../slash-commands/SlashCommand.js')
+    ]);
+    return {
+      parser: SlashCommandParser,
+      commandFactory: (definition) => SlashCommand.fromProps
+        ? SlashCommand.fromProps(definition)
+        : definition
+    };
+  } catch (error) {
+    return { parser: null, commandFactory: null, error };
+  }
+}
+
+async function loadStRuntime() {
+  try {
+    const contextModule = await import('../../../../extensions.js');
+    return {
+      getContext: contextModule.getContext,
+      extensionPromptTypes: contextModule.extension_prompt_types
+    };
+  } catch {
+    return { getContext: null, extensionPromptTypes: null };
+  }
+}
+
 export async function startTtAgentPlus727(windowRef = globalThis, options = {}) {
   const hostWindow = windowRef ?? globalThis;
   const debug = createDebugLog();
+  const stRuntime = await loadStRuntime();
   const bridge = createHostBridge({
     windowRef: hostWindow,
-    getContext: options.getContext ?? hostWindow.getContext,
-    extensionPromptTypes: options.extensionPromptTypes ?? hostWindow.extension_prompt_types,
+    getContext: options.getContext ?? stRuntime.getContext ?? hostWindow.getContext,
+    extensionPromptTypes: options.extensionPromptTypes ?? stRuntime.extensionPromptTypes ?? hostWindow.extension_prompt_types,
     debug
   });
   let state = createInitialState({ settings: bridge.loadSettings() });
@@ -204,9 +234,17 @@ export async function startTtAgentPlus727(windowRef = globalThis, options = {}) 
     }
   }
 
-  if (options.slashParser) {
-    registerSlashOnce(options.slashParser, {
-      commandFactory: options.slashCommandFactory ?? ((definition) => definition),
+  const slashRuntime = options.slashParser
+    ? {
+        parser: options.slashParser,
+        commandFactory: options.slashCommandFactory ?? ((definition) => definition),
+        error: null
+      }
+    : await loadSlashRuntime();
+
+  if (slashRuntime.parser) {
+    registerSlashOnce(slashRuntime.parser, {
+      commandFactory: slashRuntime.commandFactory ?? ((definition) => definition),
       openLatest: () => {
         const currentApp = app ?? hostWindow.__TT_AGENT_PLUS_727__;
         if (currentApp && typeof currentApp.openPanel === 'function') {
@@ -217,6 +255,8 @@ export async function startTtAgentPlus727(windowRef = globalThis, options = {}) 
       },
       debug
     });
+  } else if (slashRuntime.error) {
+    debug.warn('entry', '/777 注册失败', { error: errorMessage(slashRuntime.error) });
   }
 
   debug.info('startup', 'TT-Agent-Plus-727 已启动', { moduleId: MODULE_ID });

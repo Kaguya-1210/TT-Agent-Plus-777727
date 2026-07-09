@@ -105,13 +105,167 @@ test('autoMount false does not require document Blob or URL', async () => {
   assert.equal(app.debug.entries().some((entry) => entry.channel === 'startup'), true);
 });
 
-function createWindowRef() {
+test('autoMount tolerates panel mount errors', async () => {
+  const root = createPanelRoot();
+  Object.defineProperty(root, 'querySelectorAll', {
+    configurable: true,
+    get() {
+      throw new Error('panel render failed');
+    }
+  });
+
+  const app = await startTtAgentPlus727(createWindowRef({ document: createAutoMountDocument(root) }), {
+    getContext: () => ({ extensionSettings: {} })
+  });
+
+  assert.equal(app.state.panel.open, false);
+  assert.ok(app.debug.entries().some((entry) => entry.level === 'warn' && entry.channel === 'ui'));
+});
+
+test('autoMount tolerates magic wand mount errors', async () => {
+  const documentRef = createAutoMountDocument();
+  documentRef.querySelector = () => {
+    throw new Error('menu lookup failed');
+  };
+
+  const app = await startTtAgentPlus727(createWindowRef({ document: documentRef }), {
+    getContext: () => ({ extensionSettings: {} })
+  });
+
+  assert.equal(app.state.panel.open, false);
+  assert.ok(app.debug.entries().some((entry) => entry.level === 'warn' && entry.channel === 'entry'));
+});
+
+test('openPanel tolerates mounted render errors', async () => {
+  const root = createPanelRoot();
+  let throwDuringRender = false;
+  Object.defineProperty(root, 'querySelectorAll', {
+    configurable: true,
+    get() {
+      if (throwDuringRender) throw new Error('render failed later');
+      return () => [];
+    }
+  });
+
+  const app = await startTtAgentPlus727(createWindowRef({ document: createAutoMountDocument(root) }), {
+    getContext: () => ({ extensionSettings: {} })
+  });
+
+  throwDuringRender = true;
+
+  assert.doesNotThrow(() => app.openPanel('debug'));
+  assert.equal(app.state.panel.open, true);
+  assert.equal(app.state.panel.activeTab, 'debug');
+  assert.ok(app.debug.entries().some((entry) => entry.level === 'warn' && entry.channel === 'ui'));
+});
+
+test('refreshPromptInjection clears prompt when cache list fails', async () => {
+  const prompts = [];
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    cacheStore: {
+      async list() {
+        throw new Error('cache list failed');
+      }
+    },
+    getContext: () => ({
+      extensionSettings: {},
+      setExtensionPrompt: (...args) => prompts.push(args)
+    })
+  });
+
+  const block = await app.refreshPromptInjection();
+
+  assert.equal(block, '');
+  assert.equal(prompts.length, 1);
+  assert.equal(prompts[0][1], '');
+  assert.deepEqual(app.state.cacheEntries, []);
+  assert.equal(app.state.lastInjection.count, 0);
+  assert.equal(app.state.lastInjection.length, 0);
+  assert.match(app.state.lastInjection.error, /cache list failed/);
+  assert.ok(app.debug.entries().some((entry) => entry.level === 'error' && entry.channel === 'prompt'));
+});
+
+test('repeated startup registers slash parser once', async () => {
+  const commands = [];
+  const slashParser = {
+    addCommandObject(command) {
+      commands.push(command);
+    }
+  };
+
+  await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => ({ extensionSettings: {} }),
+    slashParser
+  });
+  await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => ({ extensionSettings: {} }),
+    slashParser
+  });
+
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].name, '777');
+});
+
+test('app state getter returns an isolated snapshot', async () => {
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => ({ extensionSettings: {} })
+  });
+  const snapshot = app.state;
+
+  snapshot.panel.open = true;
+  snapshot.settings.enabled = false;
+  snapshot.tabs.length = 0;
+
+  assert.equal(app.state.panel.open, false);
+  assert.equal(app.state.settings.enabled, true);
+  assert.ok(app.state.tabs.length > 0);
+});
+
+test('exportDebug tolerates missing browser download APIs', async () => {
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => ({ extensionSettings: {} })
+  });
+
+  assert.equal(app.exportDebug(), false);
+  assert.ok(app.debug.entries().some((entry) => entry.level === 'warn' && entry.channel === 'debug'));
+});
+
+test('promptInjectionEnabled false resets injection state and renders', async () => {
+  const prompts = [];
+  const root = createPanelRoot();
+  const app = await startTtAgentPlus727(createWindowRef({ document: createAutoMountDocument(root) }), {
+    getContext: () => ({
+      extensionSettings: {
+        [SETTINGS_KEY]: { promptInjectionEnabled: false }
+      },
+      setExtensionPrompt: (...args) => prompts.push(args)
+    })
+  });
+  const initialRenderCount = root.renderCount;
+
+  await app.cache.put(createCacheEntry('entry-1'));
+  const block = await app.refreshPromptInjection();
+
+  assert.equal(block, '');
+  assert.equal(prompts.at(-1)[1], '');
+  assert.equal(app.state.lastInjection.count, 0);
+  assert.equal(app.state.lastInjection.length, 0);
+  assert.ok(root.renderCount > initialRenderCount);
+});
+
+function createWindowRef(overrides = {}) {
   const storage = new Map();
   return {
     localStorage: {
       getItem: (key) => storage.get(key) ?? null,
       setItem: (key, value) => storage.set(key, value)
-    }
+    },
+    ...overrides
   };
 }
 
@@ -129,5 +283,46 @@ function createCacheEntry(key, overrides = {}) {
     stale: false,
     invalidationReason: null,
     ...overrides
+  };
+}
+
+function createAutoMountDocument(root = createPanelRoot()) {
+  return {
+    body: {
+      append() {}
+    },
+    getElementById() {
+      return root;
+    },
+    createElement() {
+      return createPanelRoot();
+    },
+    querySelector() {
+      return null;
+    }
+  };
+}
+
+function createPanelRoot() {
+  let renderCount = 0;
+  return {
+    id: '',
+    _innerHTML: '',
+    set innerHTML(value) {
+      renderCount += 1;
+      this._innerHTML = String(value);
+    },
+    get innerHTML() {
+      return this._innerHTML;
+    },
+    get renderCount() {
+      return renderCount;
+    },
+    querySelectorAll() {
+      return [];
+    },
+    querySelector() {
+      return null;
+    }
   };
 }

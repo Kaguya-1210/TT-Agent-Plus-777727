@@ -45,8 +45,18 @@ export async function startTtAgentPlus727(windowRef = globalThis, options = {}) 
   const hostWindow = windowRef ?? globalThis;
   const debug = createDebugLog();
   const stRuntime = await loadStRuntime();
-  if (stRuntime.error && typeof options.getContext !== 'function' && typeof hostWindow.getContext !== 'function') {
-    debug.warn('host', 'ST context runtime 加载失败', { error: errorMessage(stRuntime.error) });
+  const contextSource = selectContextSource({
+    optionsGetContext: options.getContext,
+    runtimeGetContext: stRuntime.getContext,
+    windowGetContext: hostWindow.getContext
+  });
+  if (stRuntime.error) {
+    logStRuntimeDiagnostic(debug, {
+      error: stRuntime.error,
+      hasOptionsGetContext: typeof options.getContext === 'function',
+      hasWindowGetContext: typeof hostWindow.getContext === 'function',
+      contextSource
+    });
   }
   const bridge = createHostBridge({
     windowRef: hostWindow,
@@ -335,6 +345,30 @@ function cloneValue(value) {
 
 function isWeakSetKey(value) {
   return (value !== null && typeof value === 'object') || typeof value === 'function';
+}
+
+function selectContextSource({ optionsGetContext, runtimeGetContext, windowGetContext }) {
+  if (typeof optionsGetContext === 'function') return 'options';
+  if (typeof runtimeGetContext === 'function') return 'runtime';
+  if (typeof windowGetContext === 'function') return 'window';
+  return 'none';
+}
+
+function logStRuntimeDiagnostic(debug, { error, hasOptionsGetContext, hasWindowGetContext, contextSource }) {
+  const usingFallback = contextSource === 'options' || contextSource === 'window';
+  const details = {
+    error: errorMessage(error),
+    hasOptionsGetContext,
+    hasWindowGetContext,
+    usingFallback,
+    contextSource
+  };
+  const level = contextSource === 'none' ? 'warn' : 'debug';
+  try {
+    debug?.[level]?.('host', 'ST context runtime 加载失败', details);
+  } catch {
+    // Debug logging must never break startup.
+  }
 }
 
 function errorMessage(error) {

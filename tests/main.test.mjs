@@ -117,6 +117,14 @@ test('getContext option overrides host window fallback', async () => {
   assert.equal(app.state.settings.promptInjectionEnabled, true);
   assert.equal(prompts.length, 1);
   assert.equal(prompts[0][2], 9);
+
+  const diagnostic = findStRuntimeDiagnostic(app);
+  assert.ok(diagnostic);
+  assert.equal(diagnostic.level, 'debug');
+  assert.equal(diagnostic.details.hasOptionsGetContext, true);
+  assert.equal(diagnostic.details.hasWindowGetContext, true);
+  assert.equal(diagnostic.details.usingFallback, true);
+  assert.equal(diagnostic.details.contextSource, 'options');
 });
 
 test('missing ST context runtime logs one warning only when no context fallback exists', async () => {
@@ -132,18 +140,43 @@ test('missing ST context runtime logs one warning only when no context fallback 
 
   assert.equal(warnings.length, 1);
   assert.match(warnings[0].details.error, /extensions\.js|Cannot find module|ERR_MODULE_NOT_FOUND/);
+  assert.equal(warnings[0].details.hasOptionsGetContext, false);
+  assert.equal(warnings[0].details.hasWindowGetContext, false);
+  assert.equal(warnings[0].details.usingFallback, false);
+  assert.equal(warnings[0].details.contextSource, 'none');
 });
 
-test('explicit getContext option suppresses missing ST runtime warning', async () => {
+test('explicit getContext option records quiet missing ST runtime diagnostic', async () => {
   const app = await startTtAgentPlus727(createWindowRef(), {
     autoMount: false,
     getContext: () => ({ extensionSettings: {} })
   });
 
-  assert.equal(app.debug.entries().some((entry) => (
-    entry.channel === 'host'
-    && entry.message === 'ST context runtime 加载失败'
-  )), false);
+  const diagnostic = findStRuntimeDiagnostic(app);
+
+  assert.ok(diagnostic);
+  assert.equal(diagnostic.level, 'debug');
+  assert.equal(diagnostic.details.hasOptionsGetContext, true);
+  assert.equal(diagnostic.details.hasWindowGetContext, false);
+  assert.equal(diagnostic.details.usingFallback, true);
+  assert.equal(diagnostic.details.contextSource, 'options');
+});
+
+test('window getContext fallback records quiet missing ST runtime diagnostic', async () => {
+  const app = await startTtAgentPlus727(createWindowRef({
+    getContext: () => ({ extensionSettings: {} })
+  }), {
+    autoMount: false
+  });
+
+  const diagnostic = findStRuntimeDiagnostic(app);
+
+  assert.ok(diagnostic);
+  assert.equal(diagnostic.level, 'debug');
+  assert.equal(diagnostic.details.hasOptionsGetContext, false);
+  assert.equal(diagnostic.details.hasWindowGetContext, true);
+  assert.equal(diagnostic.details.usingFallback, true);
+  assert.equal(diagnostic.details.contextSource, 'window');
 });
 
 test('promptInjectionEnabled false clears prompt', async () => {
@@ -398,6 +431,15 @@ function createCacheEntry(key, overrides = {}) {
     invalidationReason: null,
     ...overrides
   };
+}
+
+function findStRuntimeDiagnostic(app) {
+  const diagnostics = app.debug.entries().filter((entry) => (
+    entry.channel === 'host'
+    && entry.message === 'ST context runtime 加载失败'
+  ));
+  assert.ok(diagnostics.length <= 1);
+  return diagnostics[0];
 }
 
 function createAutoMountDocument(root = createPanelRoot()) {

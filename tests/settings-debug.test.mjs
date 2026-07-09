@@ -52,7 +52,7 @@ test('initial state uses Chinese tabs and no active tasks', () => {
   assert.equal(state.panel.open, false);
   assert.equal(state.panel.activeTab, 'overview');
   assert.equal(state.tasks.length, 0);
-  assert.deepEqual(state.tabs.map((tab) => tab.label), ['总览', '任务', '规则', '缓存', 'Debug', '设置']);
+  assert.deepEqual(state.tabs.map((tab) => tab.label), ['总览', '任务', '规则', '缓存', '调试', '设置']);
 });
 
 test('mergeSettings returns fresh default rule and array values', () => {

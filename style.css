@@ -6,6 +6,8 @@
   --ttap-border: rgba(23, 32, 29, 0.14);
   --ttap-accent: #12796f;
   --ttap-danger: #b42318;
+  --ttap-accent-soft: rgba(18, 121, 111, 0.12);
+  --ttap-accent-border: rgba(18, 121, 111, 0.46);
 }
 
 html[data-theme="dark"],
@@ -17,6 +19,8 @@ body.darkMode {
   --ttap-border: rgba(237, 245, 241, 0.16);
   --ttap-accent: #35b8a8;
   --ttap-danger: #ff8a7a;
+  --ttap-accent-soft: rgba(53, 184, 168, 0.16);
+  --ttap-accent-border: rgba(53, 184, 168, 0.46);
 }
 
 .tt-agent-plus-727-menu-item {
@@ -43,7 +47,9 @@ body.darkMode {
   right: 0;
   z-index: 3000;
   width: min(420px, calc(100vw - 16px));
+  height: 100vh;
   height: 100dvh;
+  min-width: 0;
   background: var(--ttap-panel);
   color: var(--ttap-text);
   border-left: 1px solid var(--ttap-border);
@@ -53,6 +59,7 @@ body.darkMode {
   transition: transform 260ms ease, opacity 220ms ease;
   display: grid;
   grid-template-rows: auto auto 1fr;
+  overflow-wrap: anywhere;
 }
 
 .ttap-panel[data-open="true"] {
@@ -60,27 +67,55 @@ body.darkMode {
   opacity: 1;
 }
 
+.ttap-panel button {
+  min-width: 0;
+  border: 1px solid var(--ttap-border);
+  border-radius: 8px;
+  background: var(--ttap-panel);
+  color: var(--ttap-text);
+  cursor: pointer;
+  font: inherit;
+  overflow-wrap: anywhere;
+}
+
+.ttap-panel button:hover {
+  border-color: var(--ttap-accent-border);
+}
+
+.ttap-panel button:focus-visible {
+  outline: 2px solid var(--ttap-accent);
+  outline-offset: 2px;
+}
+
 .ttap-header {
   min-height: 52px;
+  min-width: 0;
   padding: 0 14px;
   border-bottom: 1px solid var(--ttap-border);
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
+}
+
+.ttap-header strong,
+.ttap-card strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .ttap-icon-button {
+  flex: 0 0 auto;
   width: 34px;
   height: 34px;
-  border: 1px solid var(--ttap-border);
-  border-radius: 8px;
+  padding: 0;
   background: transparent;
-  color: var(--ttap-text);
 }
 
 .ttap-tabs {
   display: flex;
   gap: 4px;
+  min-width: 0;
   padding: 8px;
   overflow-x: auto;
   border-bottom: 1px solid var(--ttap-border);
@@ -90,21 +125,23 @@ body.darkMode {
   flex: 0 0 auto;
   min-height: 34px;
   padding: 0 10px;
-  border: 1px solid transparent;
-  border-radius: 8px;
+  border-color: transparent;
   background: transparent;
   color: var(--ttap-muted);
 }
 
 .ttap-tab[aria-selected="true"] {
-  border-color: color-mix(in srgb, var(--ttap-accent), transparent 54%);
+  border-color: var(--ttap-accent-border);
   color: var(--ttap-text);
+  background: var(--ttap-accent-soft);
+  border-color: color-mix(in srgb, var(--ttap-accent), transparent 54%);
   background: color-mix(in srgb, var(--ttap-accent), transparent 88%);
 }
 
 .ttap-body {
   min-width: 0;
   overflow: auto;
+  overflow-wrap: anywhere;
   padding: 12px;
   background: var(--ttap-bg);
 }
@@ -114,13 +151,16 @@ body.darkMode {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+  min-width: 0;
 }
 
 .ttap-metric,
 .ttap-card {
+  min-width: 0;
   border: 1px solid var(--ttap-border);
   border-radius: 8px;
   background: var(--ttap-panel);
+  overflow-wrap: anywhere;
   padding: 10px;
 }
 
@@ -133,12 +173,15 @@ body.darkMode {
 .ttap-pill {
   display: inline-flex;
   align-items: center;
+  min-width: 0;
   min-height: 24px;
   padding: 0 8px;
   border-radius: 999px;
+  background: var(--ttap-accent-soft);
   background: color-mix(in srgb, var(--ttap-accent), transparent 86%);
   color: var(--ttap-accent);
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .ttap-error {
@@ -146,9 +189,11 @@ body.darkMode {
 }
 
 .ttap-debug-list {
+  min-width: 0;
   padding-left: 20px;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 520px) {

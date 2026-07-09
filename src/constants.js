@@ -30,6 +30,6 @@ export const PANEL_TABS = Object.freeze([
   { id: 'tasks', label: '任务' },
   { id: 'rules', label: '规则' },
   { id: 'cache', label: '缓存' },
-  { id: 'debug', label: 'Debug' },
+  { id: 'debug', label: '调试' },
   { id: 'settings', label: '设置' }
 ]);

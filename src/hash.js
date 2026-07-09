@@ -9,10 +9,11 @@ export function hashString(value) {
 }
 
 export function hashSource(source) {
+  const safeSource = source ?? {};
   return hashString(JSON.stringify({
-    kind: source.kind,
-    uid: source.uid,
-    displayName: source.displayName,
-    content: source.content
+    kind: safeSource.kind,
+    uid: safeSource.uid,
+    displayName: safeSource.displayName,
+    content: safeSource.content
   }));
 }

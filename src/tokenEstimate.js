@@ -1,6 +1,12 @@
 export function estimateTokens(text) {
   if (!text) return 0;
-  const chars = Array.from(String(text));
+  let input;
+  try {
+    input = String(text);
+  } catch {
+    input = JSON.stringify(text) ?? '';
+  }
+  const chars = Array.from(input);
   let total = 0;
   for (const char of chars) {
     if (/\s/.test(char)) continue;

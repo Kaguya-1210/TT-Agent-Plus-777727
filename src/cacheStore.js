@@ -1,3 +1,20 @@
+function cloneJson(value) {
+  if (value == null) return value;
+  if (typeof structuredClone === 'function') {
+    return structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
+function parseStoredValue(raw) {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 export function createCacheKey({ scopeId, sourceHash, ruleTemplateId, ruleVersion, modelProfileId, promptVersion }) {
   return [
     scopeId || 'global',
@@ -10,19 +27,20 @@ export function createCacheKey({ scopeId, sourceHash, ruleTemplateId, ruleVersio
 }
 
 export function createMemoryCacheDriver(seed = {}) {
-  const map = new Map(Object.entries(seed));
+  const map = new Map(Object.entries(seed).map(([key, value]) => [key, cloneJson(value)]));
   return {
     async get(key) {
-      return map.get(key) ?? null;
+      const value = map.get(key);
+      return value == null ? null : cloneJson(value);
     },
     async set(key, value) {
-      map.set(key, value);
+      map.set(key, cloneJson(value));
     },
     async remove(key) {
       map.delete(key);
     },
     async values() {
-      return Array.from(map.values());
+      return Array.from(map.values()).map((value) => cloneJson(value));
     },
     async clear() {
       map.clear();
@@ -34,7 +52,7 @@ export function createLocalStorageCacheDriver(storage, prefix = 'tt_agent_plus_7
   return {
     async get(key) {
       const raw = storage.getItem(`${prefix}${key}`);
-      return raw ? JSON.parse(raw) : null;
+      return parseStoredValue(raw);
     },
     async set(key, value) {
       storage.setItem(`${prefix}${key}`, JSON.stringify(value));
@@ -47,7 +65,8 @@ export function createLocalStorageCacheDriver(storage, prefix = 'tt_agent_plus_7
       for (let index = 0; index < storage.length; index += 1) {
         const key = storage.key(index);
         if (key && key.startsWith(prefix)) {
-          entries.push(JSON.parse(storage.getItem(key)));
+          const value = parseStoredValue(storage.getItem(key));
+          if (value !== null) entries.push(value);
         }
       }
       return entries;
@@ -66,21 +85,24 @@ export function createLocalStorageCacheDriver(storage, prefix = 'tt_agent_plus_7
 export function createProcessedCacheStore(driver) {
   return {
     async put(entry) {
-      await driver.set(entry.key, entry);
-      return entry;
+      const next = cloneJson(entry);
+      await driver.set(next.key, next);
+      return cloneJson(next);
     },
     async get(key) {
-      return driver.get(key);
+      const entry = await driver.get(key);
+      return entry == null ? null : cloneJson(entry);
     },
     async list() {
-      return driver.values();
+      const entries = await driver.values();
+      return entries.map((entry) => cloneJson(entry));
     },
     async markStale(key, invalidationReason) {
       const entry = await driver.get(key);
       if (!entry) return null;
-      const next = { ...entry, stale: true, invalidationReason };
+      const next = { ...cloneJson(entry), stale: true, invalidationReason };
       await driver.set(key, next);
-      return next;
+      return cloneJson(next);
     },
     async remove(key) {
       await driver.remove(key);

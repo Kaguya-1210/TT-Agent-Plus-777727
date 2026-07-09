@@ -123,8 +123,11 @@ test('getContext option overrides host window fallback', async () => {
   assert.equal(diagnostic.level, 'debug');
   assert.equal(diagnostic.details.hasOptionsGetContext, true);
   assert.equal(diagnostic.details.hasWindowGetContext, true);
+  assert.equal(diagnostic.details.hasOptionsExtensionPromptTypes, true);
+  assert.equal(diagnostic.details.hasWindowExtensionPromptTypes, false);
   assert.equal(diagnostic.details.usingFallback, true);
   assert.equal(diagnostic.details.contextSource, 'options');
+  assert.equal(diagnostic.details.promptTypesSource, 'options');
 });
 
 test('missing ST context runtime logs one warning only when no context fallback exists', async () => {
@@ -142,11 +145,14 @@ test('missing ST context runtime logs one warning only when no context fallback 
   assert.match(warnings[0].details.error, /extensions\.js|Cannot find module|ERR_MODULE_NOT_FOUND/);
   assert.equal(warnings[0].details.hasOptionsGetContext, false);
   assert.equal(warnings[0].details.hasWindowGetContext, false);
+  assert.equal(warnings[0].details.hasOptionsExtensionPromptTypes, false);
+  assert.equal(warnings[0].details.hasWindowExtensionPromptTypes, false);
   assert.equal(warnings[0].details.usingFallback, false);
   assert.equal(warnings[0].details.contextSource, 'none');
+  assert.equal(warnings[0].details.promptTypesSource, 'none');
 });
 
-test('explicit getContext option records quiet missing ST runtime diagnostic', async () => {
+test('missing ST runtime logs warning when prompt type fallback is absent', async () => {
   const app = await startTtAgentPlus727(createWindowRef(), {
     autoMount: false,
     getContext: () => ({ extensionSettings: {} })
@@ -155,16 +161,40 @@ test('explicit getContext option records quiet missing ST runtime diagnostic', a
   const diagnostic = findStRuntimeDiagnostic(app);
 
   assert.ok(diagnostic);
+  assert.equal(diagnostic.level, 'warn');
+  assert.equal(diagnostic.details.hasOptionsGetContext, true);
+  assert.equal(diagnostic.details.hasWindowGetContext, false);
+  assert.equal(diagnostic.details.hasOptionsExtensionPromptTypes, false);
+  assert.equal(diagnostic.details.hasWindowExtensionPromptTypes, false);
+  assert.equal(diagnostic.details.usingFallback, false);
+  assert.equal(diagnostic.details.contextSource, 'options');
+  assert.equal(diagnostic.details.promptTypesSource, 'none');
+});
+
+test('explicit getContext option records quiet missing ST runtime diagnostic', async () => {
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => ({ extensionSettings: {} }),
+    extensionPromptTypes: { IN_PROMPT: 2 }
+  });
+
+  const diagnostic = findStRuntimeDiagnostic(app);
+
+  assert.ok(diagnostic);
   assert.equal(diagnostic.level, 'debug');
   assert.equal(diagnostic.details.hasOptionsGetContext, true);
   assert.equal(diagnostic.details.hasWindowGetContext, false);
+  assert.equal(diagnostic.details.hasOptionsExtensionPromptTypes, true);
+  assert.equal(diagnostic.details.hasWindowExtensionPromptTypes, false);
   assert.equal(diagnostic.details.usingFallback, true);
   assert.equal(diagnostic.details.contextSource, 'options');
+  assert.equal(diagnostic.details.promptTypesSource, 'options');
 });
 
 test('window getContext fallback records quiet missing ST runtime diagnostic', async () => {
   const app = await startTtAgentPlus727(createWindowRef({
-    getContext: () => ({ extensionSettings: {} })
+    getContext: () => ({ extensionSettings: {} }),
+    extension_prompt_types: { IN_PROMPT: 2 }
   }), {
     autoMount: false
   });
@@ -175,8 +205,11 @@ test('window getContext fallback records quiet missing ST runtime diagnostic', a
   assert.equal(diagnostic.level, 'debug');
   assert.equal(diagnostic.details.hasOptionsGetContext, false);
   assert.equal(diagnostic.details.hasWindowGetContext, true);
+  assert.equal(diagnostic.details.hasOptionsExtensionPromptTypes, false);
+  assert.equal(diagnostic.details.hasWindowExtensionPromptTypes, true);
   assert.equal(diagnostic.details.usingFallback, true);
   assert.equal(diagnostic.details.contextSource, 'window');
+  assert.equal(diagnostic.details.promptTypesSource, 'window');
 });
 
 test('promptInjectionEnabled false clears prompt', async () => {

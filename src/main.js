@@ -50,12 +50,20 @@ export async function startTtAgentPlus727(windowRef = globalThis, options = {}) 
     runtimeGetContext: stRuntime.getContext,
     windowGetContext: hostWindow.getContext
   });
+  const promptTypesSource = selectPromptTypesSource({
+    optionsExtensionPromptTypes: options.extensionPromptTypes,
+    runtimeExtensionPromptTypes: stRuntime.extensionPromptTypes,
+    windowExtensionPromptTypes: hostWindow.extension_prompt_types
+  });
   if (stRuntime.error) {
     logStRuntimeDiagnostic(debug, {
       error: stRuntime.error,
       hasOptionsGetContext: typeof options.getContext === 'function',
       hasWindowGetContext: typeof hostWindow.getContext === 'function',
-      contextSource
+      hasOptionsExtensionPromptTypes: options.extensionPromptTypes != null,
+      hasWindowExtensionPromptTypes: hostWindow.extension_prompt_types != null,
+      contextSource,
+      promptTypesSource
     });
   }
   const bridge = createHostBridge({
@@ -354,16 +362,36 @@ function selectContextSource({ optionsGetContext, runtimeGetContext, windowGetCo
   return 'none';
 }
 
-function logStRuntimeDiagnostic(debug, { error, hasOptionsGetContext, hasWindowGetContext, contextSource }) {
-  const usingFallback = contextSource === 'options' || contextSource === 'window';
+function selectPromptTypesSource({ optionsExtensionPromptTypes, runtimeExtensionPromptTypes, windowExtensionPromptTypes }) {
+  if (optionsExtensionPromptTypes != null) return 'options';
+  if (runtimeExtensionPromptTypes != null) return 'runtime';
+  if (windowExtensionPromptTypes != null) return 'window';
+  return 'none';
+}
+
+function logStRuntimeDiagnostic(debug, {
+  error,
+  hasOptionsGetContext,
+  hasWindowGetContext,
+  hasOptionsExtensionPromptTypes,
+  hasWindowExtensionPromptTypes,
+  contextSource,
+  promptTypesSource
+}) {
+  const hasContextFallback = contextSource === 'options' || contextSource === 'window';
+  const hasPromptTypesFallback = promptTypesSource === 'options' || promptTypesSource === 'window';
+  const usingFallback = hasContextFallback && hasPromptTypesFallback;
   const details = {
     error: errorMessage(error),
     hasOptionsGetContext,
     hasWindowGetContext,
+    hasOptionsExtensionPromptTypes,
+    hasWindowExtensionPromptTypes,
     usingFallback,
-    contextSource
+    contextSource,
+    promptTypesSource
   };
-  const level = contextSource === 'none' ? 'warn' : 'debug';
+  const level = usingFallback ? 'debug' : 'warn';
   try {
     debug?.[level]?.('host', 'ST context runtime 加载失败', details);
   } catch {

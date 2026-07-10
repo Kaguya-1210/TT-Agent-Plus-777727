@@ -89,6 +89,7 @@ export async function startTtAgentPlus727(windowRef = globalThis, options = {}) 
 
   let app = null;
   let mounted = null;
+  let manualTaskCounter = 0;
 
   function syncDerivedState() {
     state = {
@@ -184,6 +185,34 @@ export async function startTtAgentPlus727(windowRef = globalThis, options = {}) 
     render();
   }
 
+  async function dispatchManualSource(input = {}) {
+    const source = normalizeManualSource(input, manualTaskCounter + 1);
+    if (!source.content) {
+      debug.warn('dispatcher', '手动派发缺少资料内容', {});
+      render();
+      return null;
+    }
+
+    manualTaskCounter += 1;
+    const ruleTemplateId = resolveRuleTemplateId(input.ruleTemplateId);
+    const task = dispatcher.enqueue({
+      id: `manual-${Date.now()}-${manualTaskCounter}`,
+      sourceRefs: [source],
+      ruleTemplateId,
+      depth: 0,
+      tokenEstimate: estimateTokens(source.content)
+    });
+    debug.info('dispatcher', '手动资料已派发', {
+      taskId: task.id,
+      displayName: source.displayName,
+      ruleTemplateId
+    });
+    state = updatePanel(state, { open: true, activeTab: 'tasks' });
+    render();
+    await pumpDispatcher();
+    return dispatcher.getTask(task.id);
+  }
+
   function setProcessedPrompt(text) {
     try {
       return bridge.setProcessedPrompt(text);
@@ -260,6 +289,12 @@ export async function startTtAgentPlus727(windowRef = globalThis, options = {}) 
           dispatcher.cancel(taskId);
           render();
         },
+        onManualDispatch: (payload) => {
+          dispatchManualSource(payload).catch((error) => {
+            debug.error('dispatcher', '手动派发失败', { error: errorMessage(error) });
+            render();
+          });
+        },
         onExportDebug: exportDebug,
         debug
       });
@@ -323,6 +358,7 @@ export async function startTtAgentPlus727(windowRef = globalThis, options = {}) 
     openPanel,
     closePanel,
     setTab,
+    dispatchManualSource,
     refreshPromptInjection,
     pumpDispatcher,
     exportDebug,
@@ -332,6 +368,29 @@ export async function startTtAgentPlus727(windowRef = globalThis, options = {}) 
   hostWindow.__TT_AGENT_PLUS_727__ = app;
   hostWindow.__TT_AGENT_PLUS_727_STARTED__ = true;
   return app;
+
+  function resolveRuleTemplateId(candidate) {
+    const rules = Array.isArray(state.settings.rules) ? state.settings.rules : [];
+    if (typeof candidate === 'string' && rules.some((rule) => rule?.id === candidate)) {
+      return candidate;
+    }
+    return rules.find((rule) => typeof rule?.id === 'string')?.id ?? 'airp-character-default';
+  }
+}
+
+function normalizeManualSource(input, sequence) {
+  const source = input && typeof input === 'object' ? input : {};
+  const content = typeof source.content === 'string' ? source.content.trim() : '';
+  const displayName = typeof source.displayName === 'string' && source.displayName.trim()
+    ? source.displayName.trim()
+    : `手动资料 ${sequence}`;
+
+  return {
+    kind: 'manual',
+    uid: `manual-${hashString(`${displayName}\n${content}`)}`,
+    displayName,
+    content
+  };
 }
 
 function createCacheEntryFromCompletedTask(task, settings) {

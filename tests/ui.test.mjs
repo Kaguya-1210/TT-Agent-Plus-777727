@@ -31,6 +31,21 @@ test('debug tab renders export button when active', () => {
   assert.match(html, /hello/);
 });
 
+test('tasks tab renders a manual dispatch form for pasted source material', () => {
+  const state = createInitialState({ panel: { open: true, activeTab: 'tasks', badge: null } });
+  const html = renderPanelHtml(state);
+
+  assert.match(html, /手动派发/);
+  assert.match(html, /资料名称/);
+  assert.match(html, /资料内容/);
+  assert.match(html, /data-manual-title/);
+  assert.match(html, /data-manual-content/);
+  assert.match(html, /data-manual-rule/);
+  assert.match(html, /data-dispatch-manual/);
+  assert.match(html, /角色加工/);
+  assert.match(html, /派发加工/);
+});
+
 test('overview renders a compact dark-console status surface', () => {
   const state = createInitialState({
     panel: { open: true, activeTab: 'overview', badge: null },
@@ -65,8 +80,28 @@ test('stylesheet defaults to host-friendly dark and exposes light overrides', ()
   assert.match(css, /\.ttap-panel\[data-ttap-theme="light"\]/);
   assert.match(css, /body\.dark/);
   assert.match(css, /backdrop-filter/);
+  assert.match(css, /\.ttap-manual-dispatch/);
+  assert.match(css, /\.ttap-field/);
+  assert.match(css, /\.ttap-primary-button/);
 });
 
+
+
+test('panel opens as a centered modal instead of a right edge drawer', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  const panelBlock = css.match(/\.ttap-panel\s*{(?<body>[\s\S]*?)\n}/)?.groups?.body ?? '';
+  const openBlock = css.match(/\.ttap-panel\[data-open="true"\]\s*{(?<body>[\s\S]*?)\n}/)?.groups?.body ?? '';
+
+  assert.match(panelBlock, /top:\s*50dvh/);
+  assert.match(panelBlock, /left:\s*50vw/);
+  assert.match(panelBlock, /right:\s*auto/);
+  assert.match(panelBlock, /width:\s*min\(560px, calc\(100vw - 32px\)\)/);
+  assert.match(panelBlock, /(?:^|\n)\s*height:\s*min\(680px, calc\(100dvh - 96px\)\)/);
+  assert.match(panelBlock, /(?:^|\n)\s*max-height:\s*calc\(100dvh - 96px\)/);
+  assert.match(panelBlock, /transform:\s*translate\(-50%, calc\(-50% \+ 12px\)\) scale\(0\.98\)/);
+  assert.match(openBlock, /transform:\s*translate\(-50%, -50%\) scale\(1\)/);
+  assert.doesNotMatch(panelBlock, /(?:^|\n)\s*height:\s*100dvh/);
+});
 
 test('panel overlay is layered above host navigation chrome', () => {
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
@@ -250,6 +285,10 @@ test('mountPanel still binds normal handlers', () => {
   const approveButton = makeButton({ approveTask: 'task-1' });
   const cancelButton = makeButton({ cancelTask: 'task-1' });
   const exportButton = makeButton({});
+  const manualButton = makeButton({});
+  const manualTitle = { value: '角色A' };
+  const manualContent = { value: 'A 是骑士。' };
+  const manualRule = { value: 'airp-character-default' };
   const root = {
     innerHTML: '',
     querySelectorAll: (selector) => {
@@ -257,9 +296,16 @@ test('mountPanel still binds normal handlers', () => {
       if (selector === '[data-ttap-close]') return [closeButton];
       if (selector === '[data-approve-task]') return [approveButton];
       if (selector === '[data-cancel-task]') return [cancelButton];
+      if (selector === '[data-dispatch-manual]') return [manualButton];
       return [];
     },
-    querySelector: (selector) => selector === '[data-export-debug]' ? exportButton : null
+    querySelector: (selector) => {
+      if (selector === '[data-export-debug]') return exportButton;
+      if (selector === '[data-manual-title]') return manualTitle;
+      if (selector === '[data-manual-content]') return manualContent;
+      if (selector === '[data-manual-rule]') return manualRule;
+      return null;
+    }
   };
   const calls = [];
 
@@ -271,7 +317,8 @@ test('mountPanel still binds normal handlers', () => {
     onClose: () => calls.push(['close']),
     onApprove: (taskId) => calls.push(['approve', taskId]),
     onCancel: (taskId) => calls.push(['cancel', taskId]),
-    onExportDebug: () => calls.push(['export'])
+    onExportDebug: () => calls.push(['export']),
+    onManualDispatch: (payload) => calls.push(['manual', payload])
   });
 
   tabButton.listener();
@@ -279,12 +326,18 @@ test('mountPanel still binds normal handlers', () => {
   approveButton.listener();
   cancelButton.listener();
   exportButton.listener();
+  manualButton.listener();
 
   assert.deepEqual(calls, [
     ['tab', 'rules'],
     ['close'],
     ['approve', 'task-1'],
     ['cancel', 'task-1'],
-    ['export']
+    ['export'],
+    ['manual', {
+      displayName: '角色A',
+      content: 'A 是骑士。',
+      ruleTemplateId: 'airp-character-default'
+    }]
   ]);
 });

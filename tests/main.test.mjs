@@ -160,6 +160,60 @@ test('completed worker cache key ignores source ref metadata noise', async () =>
   assert.equal(entries[0].sourceRefs[0].uid, 'char-a');
 });
 
+test('manual source dispatch creates a worker task, cache entry, and prompt injection', async () => {
+  const prompts = [];
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => ({
+      extensionSettings: {},
+      setExtensionPrompt: (...args) => prompts.push(args)
+    }),
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+
+  const task = await app.dispatchManualSource({
+    displayName: '角色A',
+    content: '角色A 是银发骑士，会优先保护同伴。',
+    ruleTemplateId: 'airp-character-default'
+  });
+
+  assert.equal(task.state, 'completed');
+  assert.equal(task.sourceRefs[0].displayName, '角色A');
+  assert.equal(task.sourceRefs[0].kind, 'manual');
+  assert.match(task.result.processedText, /角色A 是银发骑士/);
+  assert.equal(app.state.panel.activeTab, 'tasks');
+
+  const entries = await app.cache.list();
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].sourceRefs[0].displayName, '角色A');
+  assert.match(entries[0].processedText, /角色A 是银发骑士/);
+  assert.equal(app.state.cacheEntries.length, 1);
+  assert.equal(app.state.lastInjection.count, 1);
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0][1], /角色A 是银发骑士/);
+});
+
+test('manual source dispatch rejects empty content without enqueueing a task', async () => {
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => ({ extensionSettings: {} })
+  });
+
+  const task = await app.dispatchManualSource({
+    displayName: '空资料',
+    content: '   ',
+    ruleTemplateId: 'airp-character-default'
+  });
+
+  assert.equal(task, null);
+  assert.equal(app.state.tasks.length, 0);
+  assert.ok(app.debug.entries().some((entry) => (
+    entry.level === 'warn'
+    && entry.channel === 'dispatcher'
+    && entry.message === '手动派发缺少资料内容'
+  )));
+});
+
 test('getContext option overrides host window fallback', async () => {
   const prompts = [];
   const windowRef = createWindowRef({

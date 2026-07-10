@@ -37,6 +37,7 @@ export function mountPanel(options = {}) {
     onClose,
     onApprove,
     onCancel,
+    onManualDispatch,
     onExportDebug,
     debug
   } = config;
@@ -100,6 +101,9 @@ export function mountPanel(options = {}) {
     bound = bindEach(root, '[data-cancel-task]', (button) => () => {
       safeInvoke(onCancel, debug, safeDataset(button).cancelTask);
     }, debug) && bound;
+    bound = bindEach(root, '[data-dispatch-manual]', () => () => {
+      safeInvoke(onManualDispatch, debug, readManualDispatchPayload(root));
+    }, debug) && bound;
     bound = bindOne(root, '[data-export-debug]', () => {
       safeInvoke(onExportDebug, debug);
     }, debug) && bound;
@@ -112,7 +116,7 @@ export function mountPanel(options = {}) {
 }
 
 function renderActiveTab(state, debugEntries) {
-  if (state.panel.activeTab === 'tasks') return renderTasks(state.tasks);
+  if (state.panel.activeTab === 'tasks') return renderTasks(state.tasks, state.settings);
   if (state.panel.activeTab === 'rules') return renderRules(state.settings.rules);
   if (state.panel.activeTab === 'cache') return renderCache(state.cacheEntries);
   if (state.panel.activeTab === 'debug') return renderDebug(debugEntries);
@@ -183,10 +187,10 @@ function renderRecentEvents(entries) {
   ].join('');
 }
 
-function renderTasks(tasks) {
+function renderTasks(tasks, settings) {
   const safeTasks = records(tasks);
-  if (!safeTasks.length) return '<p class="ttap-empty">当前没有 worker 任务。</p>';
-  return safeTasks.map((task) => [
+  const taskList = safeTasks.length
+    ? safeTasks.map((task) => [
     '<article class="ttap-card">',
     `<strong>${escapeHtml(task.id)}</strong>`,
     `<span class="ttap-pill">${escapeHtml(task.state)}</span>`,
@@ -195,7 +199,33 @@ function renderTasks(tasks) {
       : '',
     task.error ? `<p class="ttap-error">${escapeHtml(task.error)}</p>` : '',
     '</article>'
-  ].join('')).join('');
+  ].join('')).join('')
+    : '<p class="ttap-empty">当前没有 worker 任务。</p>';
+
+  return [
+    renderManualDispatchForm(settings),
+    taskList
+  ].join('');
+}
+
+function renderManualDispatchForm(settings) {
+  const rules = records(settings?.rules);
+  const options = rules.map((rule) => (
+    `<option value="${escapeHtml(rule.id)}">${escapeHtml(rule.name)}</option>`
+  )).join('');
+
+  return [
+    '<section class="ttap-card ttap-manual-dispatch" aria-label="手动派发">',
+    '<div class="ttap-card-heading">',
+    '<strong>手动派发</strong>',
+    '<span>粘贴世界书/角色资料，先加工进缓存，再注入提示词。</span>',
+    '</div>',
+    '<label class="ttap-field"><span>资料名称</span><input data-manual-title type="text" value="手动资料" placeholder="例如：角色A"></label>',
+    `<label class="ttap-field"><span>规则</span><select data-manual-rule>${options}</select></label>`,
+    '<label class="ttap-field"><span>资料内容</span><textarea data-manual-content rows="5" placeholder="把世界书条目、角色设定或场景资料贴到这里"></textarea></label>',
+    '<button class="ttap-primary-button" type="button" data-dispatch-manual>派发加工</button>',
+    '</section>'
+  ].join('');
 }
 
 function renderRules(rules) {
@@ -310,6 +340,23 @@ function bindOne(root, selector, listener, debug) {
     node.addEventListener('click', listener);
   }
   return true;
+}
+
+function readManualDispatchPayload(root) {
+  return {
+    displayName: readControlValue(root, '[data-manual-title]') || '手动资料',
+    content: readControlValue(root, '[data-manual-content]'),
+    ruleTemplateId: readControlValue(root, '[data-manual-rule]')
+  };
+}
+
+function readControlValue(root, selector) {
+  try {
+    const node = root?.querySelector?.(selector);
+    return typeof node?.value === 'string' ? node.value : '';
+  } catch {
+    return '';
+  }
 }
 
 function safeDataset(node) {

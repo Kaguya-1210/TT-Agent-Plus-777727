@@ -6,6 +6,8 @@
   "description": "TT-Agent-Plus-727 SillyTavern/TauriTavern extension for AIRP worker orchestration.",
   "scripts": {
     "test": "node --test tests",
-    "check": "node --test tests"
+    "check": "node --test tests",
+    "hot:update": "powershell -ExecutionPolicy Bypass -File scripts/hot-update.ps1",
+    "hot:update:dry": "powershell -ExecutionPolicy Bypass -File scripts/hot-update.ps1 -DryRun"
   }
 }

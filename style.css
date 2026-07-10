@@ -76,29 +76,37 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
 
 .ttap-panel {
   position: fixed;
-  top: 0;
-  right: 0;
+  top: 50vh;
+  top: 50dvh;
+  left: 50vw;
+  right: auto;
   z-index: var(--ttap-layer-panel);
-  width: min(440px, calc(100vw - 8px));
-  height: 100vh;
-  height: 100dvh;
+  width: min(560px, calc(100vw - 32px));
+  height: min(680px, calc(100vh - 96px));
+  height: min(680px, calc(100dvh - 96px));
+  max-height: calc(100vh - 96px);
+  max-height: calc(100dvh - 96px);
   min-width: 0;
   background: var(--ttap-panel);
   color: var(--ttap-text);
-  border-left: 1px solid var(--ttap-border);
-  box-shadow: -14px 0 34px var(--ttap-shadow);
-  transform: translateX(102%);
-  opacity: 0.98;
+  border: 1px solid var(--ttap-border);
+  border-radius: 16px;
+  box-shadow: 0 22px 64px var(--ttap-shadow);
+  transform: translate(-50%, calc(-50% + 12px)) scale(0.98);
+  opacity: 0;
+  pointer-events: none;
   transition: transform 220ms ease, opacity 180ms ease;
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: auto auto minmax(0, 1fr);
   overflow-wrap: anywhere;
+  overflow: hidden;
   backdrop-filter: blur(14px);
 }
 
 .ttap-panel[data-open="true"] {
-  transform: translateX(0);
+  transform: translate(-50%, -50%) scale(1);
   opacity: 1;
+  pointer-events: auto;
 }
 
 .ttap-panel button {
@@ -277,6 +285,71 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
   line-height: 1.2;
 }
 
+.ttap-manual-dispatch {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.ttap-card-heading {
+  display: grid;
+  gap: 4px;
+}
+
+.ttap-card-heading span {
+  color: var(--ttap-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.ttap-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--ttap-muted);
+  font-size: 12px;
+}
+
+.ttap-field input,
+.ttap-field select,
+.ttap-field textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--ttap-border);
+  border-radius: 8px;
+  background: var(--ttap-bg);
+  color: var(--ttap-text);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.ttap-field input,
+.ttap-field select {
+  min-height: 34px;
+  padding: 0 9px;
+}
+
+.ttap-field textarea {
+  min-height: 108px;
+  padding: 9px;
+  resize: vertical;
+}
+
+.ttap-field input:focus,
+.ttap-field select:focus,
+.ttap-field textarea:focus {
+  border-color: var(--ttap-accent-border);
+}
+
+.ttap-primary-button {
+  min-height: 36px;
+  border-color: var(--ttap-accent-border) !important;
+  background: var(--ttap-accent-soft) !important;
+  color: var(--ttap-text) !important;
+  font-weight: 600 !important;
+}
+
 .ttap-overview-flow {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -349,7 +422,12 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
 
 @media (max-width: 520px) {
   .ttap-panel {
-    width: 100vw;
+    width: calc(100vw - 16px);
+    height: calc(100vh - 16px);
+    height: calc(100dvh - 16px);
+    max-height: calc(100vh - 16px);
+    max-height: calc(100dvh - 16px);
+    border-radius: 14px;
   }
 
   .ttap-metrics,

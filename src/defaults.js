@@ -55,6 +55,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   paidApiProfileIds: [],
   promptInjectionEnabled: true,
   promptBlockMaxTokens: 2400,
+  worldInfoCaptureEnabled: true,
+  worldInfoBypassEnabled: true,
   workerAdapter: 'deterministic',
   rules: DEFAULT_RULE_TEMPLATES
 });

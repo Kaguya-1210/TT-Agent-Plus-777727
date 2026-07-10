@@ -85,6 +85,12 @@ export function mergeSettings(saved = {}) {
       ? source.promptInjectionEnabled
       : defaults.promptInjectionEnabled,
     promptBlockMaxTokens: clampInteger(source.promptBlockMaxTokens, defaults.promptBlockMaxTokens, 200, 12000),
+    worldInfoCaptureEnabled: typeof source.worldInfoCaptureEnabled === 'boolean'
+      ? source.worldInfoCaptureEnabled
+      : defaults.worldInfoCaptureEnabled,
+    worldInfoBypassEnabled: typeof source.worldInfoBypassEnabled === 'boolean'
+      ? source.worldInfoBypassEnabled
+      : defaults.worldInfoBypassEnabled,
     workerAdapter: WORKER_ADAPTERS.has(source.workerAdapter)
       ? source.workerAdapter
       : defaults.workerAdapter,

@@ -285,10 +285,37 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
   line-height: 1.2;
 }
 
-.ttap-manual-dispatch {
+.ttap-manual-dispatch,
+.ttap-captured-dispatch {
   display: grid;
   gap: 10px;
   margin-bottom: 10px;
+}
+
+.ttap-captured-heading {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+}
+
+.ttap-captured-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ttap-captured-list li {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--ttap-border);
+  border-radius: 6px;
+  background: var(--ttap-bg);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ttap-card-heading {
@@ -438,6 +465,11 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
 
   .ttap-overview-flow {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ttap-captured-heading,
+  .ttap-captured-list {
+    grid-template-columns: 1fr;
   }
 }
 

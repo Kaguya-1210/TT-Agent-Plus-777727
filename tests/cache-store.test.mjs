@@ -69,6 +69,20 @@ test('hashSource handles empty source values', () => {
   assert.equal(hashSource({}), hashSource({}));
 });
 
+test('hashSource distinguishes identical entries from different world books', () => {
+  const source = {
+    kind: 'world_info',
+    uid: 1,
+    displayName: '角色A',
+    content: '相同内容'
+  };
+
+  assert.notEqual(
+    hashSource({ ...source, world: '世界书A' }),
+    hashSource({ ...source, world: '世界书B' })
+  );
+});
+
 test('cache store saves and marks entries stale', async () => {
   const store = createProcessedCacheStore(createMemoryCacheDriver());
   const key = createCacheKey({

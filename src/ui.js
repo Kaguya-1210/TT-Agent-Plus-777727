@@ -38,6 +38,7 @@ export function mountPanel(options = {}) {
     onApprove,
     onCancel,
     onManualDispatch,
+    onCapturedDispatch,
     onExportDebug,
     debug
   } = config;
@@ -104,6 +105,9 @@ export function mountPanel(options = {}) {
     bound = bindEach(root, '[data-dispatch-manual]', () => () => {
       safeInvoke(onManualDispatch, debug, readManualDispatchPayload(root));
     }, debug) && bound;
+    bound = bindEach(root, '[data-dispatch-captured]', () => () => {
+      safeInvoke(onCapturedDispatch, debug, readCapturedDispatchPayload(root));
+    }, debug) && bound;
     bound = bindOne(root, '[data-export-debug]', () => {
       safeInvoke(onExportDebug, debug);
     }, debug) && bound;
@@ -116,7 +120,9 @@ export function mountPanel(options = {}) {
 }
 
 function renderActiveTab(state, debugEntries) {
-  if (state.panel.activeTab === 'tasks') return renderTasks(state.tasks, state.settings);
+  if (state.panel.activeTab === 'tasks') {
+    return renderTasks(state.tasks, state.settings, state.worldInfoCapture);
+  }
   if (state.panel.activeTab === 'rules') return renderRules(state.settings.rules);
   if (state.panel.activeTab === 'cache') return renderCache(state.cacheEntries);
   if (state.panel.activeTab === 'debug') return renderDebug(debugEntries);
@@ -187,7 +193,7 @@ function renderRecentEvents(entries) {
   ].join('');
 }
 
-function renderTasks(tasks, settings) {
+function renderTasks(tasks, settings, worldInfoCapture) {
   const safeTasks = records(tasks);
   const taskList = safeTasks.length
     ? safeTasks.map((task) => [
@@ -203,16 +209,14 @@ function renderTasks(tasks, settings) {
     : '<p class="ttap-empty">当前没有 worker 任务。</p>';
 
   return [
+    renderCapturedDispatch(worldInfoCapture, settings),
     renderManualDispatchForm(settings),
     taskList
   ].join('');
 }
 
 function renderManualDispatchForm(settings) {
-  const rules = records(settings?.rules);
-  const options = rules.map((rule) => (
-    `<option value="${escapeHtml(rule.id)}">${escapeHtml(rule.name)}</option>`
-  )).join('');
+  const options = renderRuleOptions(settings);
 
   return [
     '<section class="ttap-card ttap-manual-dispatch" aria-label="手动派发">',
@@ -226,6 +230,33 @@ function renderManualDispatchForm(settings) {
     '<button class="ttap-primary-button" type="button" data-dispatch-manual>派发加工</button>',
     '</section>'
   ].join('');
+}
+
+function renderCapturedDispatch(capture, settings) {
+  const entries = records(capture?.entries);
+  if (!entries.length) return '';
+
+  const names = entries.map((entry) => (
+    `<li title="${escapeHtml(entry.displayName)}">${escapeHtml(entry.displayName || '未命名条目')}</li>`
+  )).join('');
+
+  return [
+    '<section class="ttap-card ttap-captured-dispatch" aria-label="本轮世界书">',
+    '<div class="ttap-card-heading ttap-captured-heading">',
+    '<strong>本轮世界书</strong>',
+    `<span>${entries.length} 条命中 · ${formatCount(capture?.totalTokens)} tk</span>`,
+    '</div>',
+    `<ul class="ttap-captured-list">${names}</ul>`,
+    `<label class="ttap-field"><span>加工规则</span><select data-captured-rule>${renderRuleOptions(settings)}</select></label>`,
+    '<button class="ttap-primary-button" type="button" data-dispatch-captured>加工本轮命中</button>',
+    '</section>'
+  ].join('');
+}
+
+function renderRuleOptions(settings) {
+  return records(settings?.rules).map((rule) => (
+    `<option value="${escapeHtml(rule.id)}">${escapeHtml(rule.name)}</option>`
+  )).join('');
 }
 
 function renderRules(rules) {
@@ -292,6 +323,7 @@ function normalizeState(state) {
     tabs,
     tasks: records(source.tasks),
     cacheEntries: records(source.cacheEntries),
+    worldInfoCapture: isRecord(source.worldInfoCapture) ? source.worldInfoCapture : null,
     lastInjection: isRecord(source.lastInjection) ? source.lastInjection : null,
     settings: {
       ...settings,
@@ -348,6 +380,18 @@ function readManualDispatchPayload(root) {
     content: readControlValue(root, '[data-manual-content]'),
     ruleTemplateId: readControlValue(root, '[data-manual-rule]')
   };
+}
+
+function readCapturedDispatchPayload(root) {
+  return {
+    ruleTemplateId: readControlValue(root, '[data-captured-rule]')
+  };
+}
+
+function formatCount(value) {
+  const count = Number(value);
+  if (!Number.isFinite(count) || count <= 0) return '0';
+  return Math.trunc(count).toLocaleString('zh-CN');
 }
 
 function readControlValue(root, selector) {

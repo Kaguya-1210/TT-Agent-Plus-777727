@@ -82,6 +82,79 @@ export function createLocalStorageCacheDriver(storage, prefix = 'tt_agent_plus_7
   };
 }
 
+export function createFallbackCacheDriver(primary, fallback, onFallback) {
+  let fallbackActive = false;
+  let fallbackNotified = false;
+
+  function activateFallback(error) {
+    fallbackActive = true;
+    if (fallbackNotified) return;
+    fallbackNotified = true;
+    try {
+      onFallback?.(error);
+    } catch {
+      // Cache diagnostics must not break the fallback path.
+    }
+  }
+
+  return {
+    async get(key) {
+      if (fallbackActive) return fallback.get(key);
+      try {
+        const value = await primary.get(key);
+        if (value !== null && value !== undefined) await fallback.set(key, value);
+        return value;
+      } catch (error) {
+        activateFallback(error);
+        return fallback.get(key);
+      }
+    },
+    async set(key, value) {
+      if (fallbackActive) return fallback.set(key, value);
+      try {
+        await primary.set(key, value);
+        await fallback.set(key, value);
+      } catch (error) {
+        activateFallback(error);
+        await fallback.set(key, value);
+      }
+    },
+    async remove(key) {
+      if (!fallbackActive) {
+        try {
+          await primary.remove(key);
+        } catch (error) {
+          activateFallback(error);
+        }
+      }
+      await fallback.remove(key);
+    },
+    async values() {
+      if (fallbackActive) return fallback.values();
+      try {
+        const values = await primary.values();
+        for (const value of values) {
+          if (value?.key) await fallback.set(value.key, value);
+        }
+        return values;
+      } catch (error) {
+        activateFallback(error);
+        return fallback.values();
+      }
+    },
+    async clear() {
+      if (!fallbackActive) {
+        try {
+          await primary.clear();
+        } catch (error) {
+          activateFallback(error);
+        }
+      }
+      await fallback.clear();
+    }
+  };
+}
+
 export function createProcessedCacheStore(driver) {
   return {
     async put(entry) {

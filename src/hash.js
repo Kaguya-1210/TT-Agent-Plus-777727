@@ -12,7 +12,13 @@ export function hashSource(source) {
   const safeSource = source ?? {};
   return hashString(JSON.stringify({
     kind: safeSource.kind,
+    world: safeSource.world,
     uid: safeSource.uid,
+    parentUid: safeSource.parentUid,
+    parentSourceHash: safeSource.parentSourceHash,
+    splitPlanId: safeSource.splitPlanId,
+    partIndex: safeSource.partIndex,
+    partCount: safeSource.partCount,
     displayName: safeSource.displayName,
     content: safeSource.content
   }));

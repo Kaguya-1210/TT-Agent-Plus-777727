@@ -27,6 +27,14 @@ export function createInitialState(overrides = {}) {
     cacheEntries: [],
     approvals: [],
     activeWorkers: 0,
+    worldInfoCapture: {
+      scopeId: 'global',
+      capturedAt: null,
+      entries: [],
+      totalTokens: 0,
+      budget: { current: 0, overflowed: false },
+      scan: { current: 0, next: 0, loopCount: 0 }
+    },
     lastInjection: null,
     warnings: [],
     ...rest

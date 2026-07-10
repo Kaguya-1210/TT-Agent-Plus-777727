@@ -46,6 +46,32 @@ test('tasks tab renders a manual dispatch form for pasted source material', () =
   assert.match(html, /派发加工/);
 });
 
+test('tasks tab renders captured world-info summary and dispatch control', () => {
+  const state = createInitialState({
+    panel: { open: true, activeTab: 'tasks', badge: null },
+    worldInfoCapture: {
+      scopeId: 'chat-1',
+      capturedAt: '2026-07-10T00:00:00.000Z',
+      totalTokens: 3456,
+      entries: [
+        { kind: 'world_info', world: 'Lore', uid: 1, displayName: '角色A', content: 'A', tokenEstimate: 1000 },
+        { kind: 'world_info', world: 'Lore', uid: 2, displayName: '角色B', content: 'B', tokenEstimate: 2456 }
+      ],
+      budget: { current: 3456, overflowed: false }
+    }
+  });
+  const html = renderPanelHtml(state);
+
+  assert.match(html, /本轮世界书/);
+  assert.match(html, /2 条命中/);
+  assert.match(html, /3,456 tk/);
+  assert.match(html, /角色A/);
+  assert.match(html, /角色B/);
+  assert.match(html, /data-captured-rule/);
+  assert.match(html, /data-dispatch-captured/);
+  assert.match(html, /加工本轮命中/);
+});
+
 test('overview renders a compact dark-console status surface', () => {
   const state = createInitialState({
     panel: { open: true, activeTab: 'overview', badge: null },
@@ -81,6 +107,7 @@ test('stylesheet defaults to host-friendly dark and exposes light overrides', ()
   assert.match(css, /body\.dark/);
   assert.match(css, /backdrop-filter/);
   assert.match(css, /\.ttap-manual-dispatch/);
+  assert.match(css, /\.ttap-captured-dispatch/);
   assert.match(css, /\.ttap-field/);
   assert.match(css, /\.ttap-primary-button/);
 });
@@ -286,9 +313,11 @@ test('mountPanel still binds normal handlers', () => {
   const cancelButton = makeButton({ cancelTask: 'task-1' });
   const exportButton = makeButton({});
   const manualButton = makeButton({});
+  const capturedButton = makeButton({});
   const manualTitle = { value: '角色A' };
   const manualContent = { value: 'A 是骑士。' };
   const manualRule = { value: 'airp-character-default' };
+  const capturedRule = { value: 'airp-scene-default' };
   const root = {
     innerHTML: '',
     querySelectorAll: (selector) => {
@@ -297,6 +326,7 @@ test('mountPanel still binds normal handlers', () => {
       if (selector === '[data-approve-task]') return [approveButton];
       if (selector === '[data-cancel-task]') return [cancelButton];
       if (selector === '[data-dispatch-manual]') return [manualButton];
+      if (selector === '[data-dispatch-captured]') return [capturedButton];
       return [];
     },
     querySelector: (selector) => {
@@ -304,6 +334,7 @@ test('mountPanel still binds normal handlers', () => {
       if (selector === '[data-manual-title]') return manualTitle;
       if (selector === '[data-manual-content]') return manualContent;
       if (selector === '[data-manual-rule]') return manualRule;
+      if (selector === '[data-captured-rule]') return capturedRule;
       return null;
     }
   };
@@ -318,7 +349,8 @@ test('mountPanel still binds normal handlers', () => {
     onApprove: (taskId) => calls.push(['approve', taskId]),
     onCancel: (taskId) => calls.push(['cancel', taskId]),
     onExportDebug: () => calls.push(['export']),
-    onManualDispatch: (payload) => calls.push(['manual', payload])
+    onManualDispatch: (payload) => calls.push(['manual', payload]),
+    onCapturedDispatch: (payload) => calls.push(['captured', payload])
   });
 
   tabButton.listener();
@@ -327,6 +359,7 @@ test('mountPanel still binds normal handlers', () => {
   cancelButton.listener();
   exportButton.listener();
   manualButton.listener();
+  capturedButton.listener();
 
   assert.deepEqual(calls, [
     ['tab', 'rules'],
@@ -338,6 +371,7 @@ test('mountPanel still binds normal handlers', () => {
       displayName: '角色A',
       content: 'A 是骑士。',
       ruleTemplateId: 'airp-character-default'
-    }]
+    }],
+    ['captured', { ruleTemplateId: 'airp-scene-default' }]
   ]);
 });

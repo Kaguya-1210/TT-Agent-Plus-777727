@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { MODULE_ID, SETTINGS_KEY } from '../src/constants.js';
 import { startTtAgentPlus727 } from '../src/main.js';
+import { normalizeWorldInfoScan } from '../src/worldInfoCapture.js';
 
 test('bootstrap returns app API and records startup', async () => {
   const storage = new Map();
@@ -212,6 +213,570 @@ test('manual source dispatch rejects empty content without enqueueing a task', a
     && entry.channel === 'dispatcher'
     && entry.message === '手动派发缺少资料内容'
   )));
+});
+
+test('world-info scan capture updates state and keeps uncached original entries active', async () => {
+  const eventSource = createEventSource();
+  const context = {
+    chatId: 'chat-world-1',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt() {}
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  const scan = createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, comment: '角色A', content: '角色A 是骑士。', disable: false }]
+  ]);
+
+  await eventSource.emit('worldinfo_scan_done', scan);
+
+  assert.equal(app.state.worldInfoCapture.scopeId, 'chat-world-1');
+  assert.equal(app.state.worldInfoCapture.entries.length, 1);
+  assert.equal(app.state.worldInfoCapture.entries[0].displayName, '角色A');
+  assert.equal(scan.activated.entries.size, 1);
+  assert.equal(app.state.lastInjection.count, 0);
+});
+
+test('world-info scan injects matching processed cache and bypasses covered original entries', async () => {
+  const prompts = [];
+  const eventSource = createEventSource();
+  const context = {
+    chatId: 'chat-world-2',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt: (...args) => prompts.push(args)
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  const scan = createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, comment: '角色A', content: '角色A 是骑士。', disable: false }],
+    ['Lore.2', { uid: 2, comment: '角色B', content: '角色B 是法师。', disable: false }]
+  ]);
+  const [sourceA] = normalizeWorldInfoScan(scan).entries;
+  await app.cache.put(createCacheEntry('processed-world-a', {
+    scopeId: 'chat-world-2',
+    sourceRefs: [sourceA],
+    processedText: '【角色A】可靠的银发骑士。',
+    tokenEstimate: 12
+  }));
+
+  await eventSource.emit('worldinfo_scan_done', scan);
+
+  assert.equal(scan.activated.entries.has('Lore.1'), false);
+  assert.equal(scan.activated.entries.has('Lore.2'), true);
+  assert.equal(app.state.lastInjection.count, 1);
+  assert.equal(app.state.lastInjection.bypassed, 1);
+  assert.match(prompts.at(-1)[1], /可靠的银发骑士/);
+  assert.doesNotMatch(prompts.at(-1)[1], /角色B 是法师/);
+});
+
+test('world-info cache never crosses chat scope', async () => {
+  const prompts = [];
+  const eventSource = createEventSource();
+  let chatId = 'chat-a';
+  const context = {
+    getCurrentChatId: () => chatId,
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt: (...args) => prompts.push(args)
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  const sourceScan = createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, comment: '角色A', content: '角色A 是骑士。', disable: false }]
+  ]);
+  const [source] = normalizeWorldInfoScan(sourceScan).entries;
+  await app.cache.put(createCacheEntry('chat-a-cache', {
+    scopeId: 'chat-a',
+    sourceRefs: [source],
+    processedText: '只属于 chat-a 的结果'
+  }));
+
+  chatId = 'chat-b';
+  const chatBScan = createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, comment: '角色A', content: '角色A 是骑士。', disable: false }]
+  ]);
+  await eventSource.emit('worldinfo_scan_done', chatBScan);
+
+  assert.equal(chatBScan.activated.entries.has('Lore.1'), true);
+  assert.equal(app.state.lastInjection.count, 0);
+  assert.equal(prompts.at(-1)[1], '');
+});
+
+test('empty world-info scan clears the previous processed prompt', async () => {
+  const prompts = [];
+  const eventSource = createEventSource();
+  const context = {
+    chatId: 'chat-empty-scan',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt: (...args) => prompts.push(args)
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  const populatedScan = createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, comment: '角色A', content: 'A', disable: false }]
+  ]);
+  const [source] = normalizeWorldInfoScan(populatedScan).entries;
+  await app.cache.put(createCacheEntry('active-cache', {
+    scopeId: 'chat-empty-scan',
+    sourceRefs: [source],
+    processedText: '当前有效缓存'
+  }));
+  await eventSource.emit('worldinfo_scan_done', populatedScan);
+  assert.match(prompts.at(-1)[1], /当前有效缓存/);
+
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([]));
+
+  assert.equal(prompts.at(-1)[1], '');
+  assert.equal(app.state.lastInjection.count, 0);
+});
+
+test('newest concurrent world-info scan owns the final prompt', async () => {
+  const prompts = [];
+  const eventSource = createEventSource();
+  const context = {
+    chatId: 'chat-race',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt: (...args) => prompts.push(args)
+  };
+  const scanA = createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, comment: '角色A', content: 'A', disable: false }]
+  ]);
+  const scanB = createWorldInfoScanEvent([
+    ['Lore.2', { uid: 2, comment: '角色B', content: 'B', disable: false }]
+  ]);
+  const [sourceA] = normalizeWorldInfoScan(scanA).entries;
+  const [sourceB] = normalizeWorldInfoScan(scanB).entries;
+  const firstList = createDeferred();
+  const secondList = createDeferred();
+  let deferScans = false;
+  let listCount = 0;
+  const cacheStore = {
+    async list() {
+      if (!deferScans) return [];
+      listCount += 1;
+      return listCount === 1 ? firstList.promise : secondList.promise;
+    },
+    async get() { return null; },
+    async put(entry) { return entry; }
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    cacheStore,
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  deferScans = true;
+
+  const firstScanPromise = eventSource.emit('worldinfo_scan_done', scanA);
+  await waitForMicrotasks();
+  const secondScanPromise = eventSource.emit('worldinfo_scan_done', scanB);
+  await waitForMicrotasks();
+  secondList.resolve([createCacheEntry('b', {
+    scopeId: 'chat-race',
+    sourceRefs: [sourceB],
+    processedText: '处理后的 B'
+  })]);
+  await secondScanPromise;
+  firstList.resolve([createCacheEntry('a', {
+    scopeId: 'chat-race',
+    sourceRefs: [sourceA],
+    processedText: '处理后的 A'
+  })]);
+  await firstScanPromise;
+
+  assert.equal(app.state.worldInfoCapture.entries[0].uid, 2);
+  assert.match(prompts.at(-1)[1], /处理后的 B/);
+  assert.doesNotMatch(prompts.at(-1)[1], /处理后的 A/);
+});
+
+test('newest concurrent prompt refresh owns the final prompt', async () => {
+  const prompts = [];
+  const firstList = createDeferred();
+  const secondList = createDeferred();
+  let deferRefreshes = false;
+  let listCount = 0;
+  const cacheStore = {
+    async list() {
+      if (!deferRefreshes) return [];
+      listCount += 1;
+      return listCount === 1 ? firstList.promise : secondList.promise;
+    }
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    cacheStore,
+    getContext: () => ({
+      extensionSettings: {},
+      setExtensionPrompt: (...args) => prompts.push(args)
+    })
+  });
+  deferRefreshes = true;
+
+  const firstRefresh = app.refreshPromptInjection();
+  await waitForMicrotasks();
+  const secondRefresh = app.refreshPromptInjection();
+  await waitForMicrotasks();
+  secondList.resolve([createCacheEntry('newer', { processedText: '较新的提示词' })]);
+  await secondRefresh;
+  firstList.resolve([createCacheEntry('older', { processedText: '较旧的提示词' })]);
+  await firstRefresh;
+
+  assert.match(prompts.at(-1)[1], /较新的提示词/);
+  assert.doesNotMatch(prompts.at(-1)[1], /较旧的提示词/);
+});
+
+test('dispatchCapturedWorldInfo batches by token limit and reuses completed cache', async () => {
+  const eventSource = createEventSource();
+  const context = {
+    chatId: 'chat-world-3',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {
+      [SETTINGS_KEY]: {
+        maxWorkerInputTokens: 1000,
+        promptBlockMaxTokens: 12000,
+        rules: [{ id: 'airp-character-default', name: '角色加工', maxInputTokens: 1000 }]
+      }
+    },
+    setExtensionPrompt() {}
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  const scan = createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, comment: '角色A', content: '甲'.repeat(600), disable: false }],
+    ['Lore.2', { uid: 2, comment: '角色B', content: '乙'.repeat(600), disable: false }]
+  ]);
+  await eventSource.emit('worldinfo_scan_done', scan);
+
+  const first = await app.dispatchCapturedWorldInfo({ ruleTemplateId: 'airp-character-default' });
+
+  assert.equal(first.planned, 2);
+  assert.equal(first.enqueued, 2);
+  assert.equal(first.cacheHits, 0);
+  assert.equal(app.state.tasks.length, 2);
+  assert.ok(app.state.tasks.every((task) => task.tokenEstimate <= 1000));
+  assert.ok(app.state.tasks.every((task) => task.state === 'completed'));
+  const savedEntries = await app.cache.list();
+  assert.equal(savedEntries.length, 2);
+  assert.ok(savedEntries.every((entry) => entry.scopeId === 'chat-world-3'));
+  assert.ok(savedEntries.every((entry) => entry.ruleTemplateId === 'airp-character-default'));
+  assert.ok(savedEntries.every((entry) => entry.ruleVersion === 1));
+  assert.ok(savedEntries.every((entry) => entry.modelProfileId === 'current'));
+  assert.ok(savedEntries.every((entry) => entry.promptVersion === 1));
+
+  const second = await app.dispatchCapturedWorldInfo({ ruleTemplateId: 'airp-character-default' });
+  assert.equal(second.planned, 2);
+  assert.equal(second.enqueued, 0);
+  assert.equal(second.cacheHits, 2);
+  assert.equal(app.state.tasks.length, 2);
+});
+
+test('dispatchCapturedWorldInfo does not share cache keys across world books', async () => {
+  const eventSource = createEventSource();
+  const context = {
+    chatId: 'chat-world-key',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt() {}
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['世界书A.1', { uid: 1, comment: '角色A', content: '相同内容', disable: false }]
+  ]));
+  const first = await app.dispatchCapturedWorldInfo();
+
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['世界书B.1', { uid: 1, comment: '角色A', content: '相同内容', disable: false }]
+  ]));
+  const second = await app.dispatchCapturedWorldInfo();
+
+  assert.equal(first.enqueued, 1);
+  assert.equal(second.cacheHits, 0);
+  assert.equal(second.enqueued, 1);
+  assert.equal((await app.cache.list()).length, 2);
+});
+
+test('dispatchCapturedWorldInfo rejects a capture from a previous chat', async () => {
+  const eventSource = createEventSource();
+  let chatId = 'chat-a';
+  const context = {
+    getCurrentChatId: () => chatId,
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt() {}
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, comment: '角色A', content: 'A', disable: false }]
+  ]));
+
+  chatId = 'chat-b';
+  const result = await app.dispatchCapturedWorldInfo();
+
+  assert.equal(result.enqueued, 0);
+  assert.equal(result.staleCapture, true);
+  assert.equal(app.state.tasks.length, 0);
+});
+
+test('dispatchCapturedWorldInfo keeps one scope snapshot when a newer scan arrives', async () => {
+  const eventSource = createEventSource();
+  let chatId = 'chat-a';
+  const firstGet = createDeferred();
+  let getCount = 0;
+  const cacheStore = {
+    async list() { return []; },
+    async get() {
+      getCount += 1;
+      return getCount === 1 ? firstGet.promise : null;
+    },
+    async put(entry) { return entry; },
+    async remove() {}
+  };
+  const context = {
+    getCurrentChatId: () => chatId,
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {
+      [SETTINGS_KEY]: { maxWorkerInputTokens: 1000 }
+    },
+    setExtensionPrompt() {}
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    cacheStore,
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, comment: '角色A', content: '甲'.repeat(600), disable: false }],
+    ['Lore.2', { uid: 2, comment: '角色B', content: '乙'.repeat(600), disable: false }]
+  ]));
+
+  const dispatchPromise = app.dispatchCapturedWorldInfo();
+  await waitForMicrotasks();
+  chatId = 'chat-b';
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Other.3', { uid: 3, comment: '角色C', content: 'C', disable: false }]
+  ]));
+  firstGet.resolve(null);
+  const result = await dispatchPromise;
+
+  assert.equal(result.staleCapture, true);
+  assert.ok(app.state.tasks.every((task) => task.scopeId === 'chat-a'));
+});
+
+test('dispatchCapturedWorldInfo rechecks its capture after removing invalid cache', async () => {
+  const eventSource = createEventSource();
+  const removeFinished = createDeferred();
+  const cacheStore = {
+    async list() { return []; },
+    async get() { return { key: 'malformed', stale: false }; },
+    async remove() { return removeFinished.promise; },
+    async put(entry) { return entry; }
+  };
+  const context = {
+    chatId: 'chat-remove-race',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt() {}
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    cacheStore,
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, comment: '角色A', content: 'A', disable: false }]
+  ]));
+
+  const dispatchPromise = app.dispatchCapturedWorldInfo();
+  await waitForMicrotasks();
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.2', { uid: 2, comment: '角色B', content: 'B', disable: false }]
+  ]));
+  removeFinished.resolve();
+  const result = await dispatchPromise;
+
+  assert.equal(result.staleCapture, true);
+  assert.equal(result.enqueued, 0);
+  assert.equal(app.state.tasks.length, 0);
+});
+
+test('dispatchCapturedWorldInfo retries completed work when its cache write failed', async () => {
+  const eventSource = createEventSource();
+  const context = {
+    chatId: 'chat-cache-failure',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt() {}
+  };
+  const cacheStore = {
+    async get() { return null; },
+    async put() { throw new Error('storage full'); },
+    async list() { return []; }
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    cacheStore,
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, comment: '角色A', content: '角色A 是骑士。', disable: false }]
+  ]));
+
+  const first = await app.dispatchCapturedWorldInfo();
+  const second = await app.dispatchCapturedWorldInfo();
+
+  assert.equal(first.enqueued, 1);
+  assert.equal(second.enqueued, 1);
+  assert.equal(second.inFlight, 0);
+  assert.equal(app.state.tasks.length, 2);
+});
+
+test('dispatchCapturedWorldInfo replaces malformed cache instead of reporting a hit', async () => {
+  const eventSource = createEventSource();
+  const context = {
+    chatId: 'chat-malformed-cache',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt() {}
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, comment: '角色A', content: '角色A 是骑士。', disable: false }]
+  ]));
+  const first = await app.dispatchCapturedWorldInfo();
+  const [saved] = await app.cache.list();
+  await app.cache.put({ key: saved.key, stale: false });
+
+  const second = await app.dispatchCapturedWorldInfo();
+
+  assert.equal(first.enqueued, 1);
+  assert.equal(second.cacheHits, 0);
+  assert.equal(second.enqueued, 1);
+});
+
+test('dispatchCapturedWorldInfo rejects cache whose source refs do not match its descriptor', async () => {
+  const eventSource = createEventSource();
+  const context = {
+    chatId: 'chat-tampered-cache',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt() {}
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, comment: '角色A', content: 'A', disable: false }]
+  ]));
+  await app.dispatchCapturedWorldInfo();
+  const [saved] = await app.cache.list();
+  await app.cache.put({
+    ...saved,
+    sourceRefs: [{ ...saved.sourceRefs[0], world: 'Tampered' }]
+  });
+
+  const second = await app.dispatchCapturedWorldInfo();
+
+  assert.equal(second.cacheHits, 0);
+  assert.equal(second.enqueued, 1);
+});
+
+test('default browser cache survives app restart through localStorage', async () => {
+  const localStorage = createBrowserStorage();
+  const windowRef = createWindowRef({ localStorage });
+  const options = {
+    autoMount: false,
+    getContext: () => ({ extensionSettings: {}, setExtensionPrompt() {} }),
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  };
+  const first = await startTtAgentPlus727(windowRef, options);
+  await first.cache.put(createCacheEntry('persistent-entry'));
+
+  const second = await startTtAgentPlus727(windowRef, options);
+
+  assert.equal((await second.cache.list()).length, 1);
+  assert.equal((await second.cache.get('persistent-entry')).processedText, 'cached result');
+  assert.equal(second.state.cacheEntries.length, 1);
+});
+
+test('blocked localStorage falls back to memory cache', async () => {
+  const localStorage = createBrowserStorage();
+  localStorage.setItem = () => {
+    throw new Error('blocked write');
+  };
+  const app = await startTtAgentPlus727(createWindowRef({ localStorage }), {
+    autoMount: false,
+    getContext: () => ({ extensionSettings: {} })
+  });
+
+  await assert.doesNotReject(() => app.cache.put(createCacheEntry('memory-fallback')));
+  assert.equal((await app.cache.get('memory-fallback')).processedText, 'cached result');
+});
+
+test('localStorage runtime quota failure switches to memory cache', async () => {
+  const localStorage = createBrowserStorage();
+  const originalSetItem = localStorage.setItem.bind(localStorage);
+  let writes = 0;
+  localStorage.setItem = (key, value) => {
+    writes += 1;
+    if (writes > 1) throw new Error('quota exceeded');
+    originalSetItem(key, value);
+  };
+  const app = await startTtAgentPlus727(createWindowRef({ localStorage }), {
+    autoMount: false,
+    getContext: () => ({ extensionSettings: {} })
+  });
+
+  await assert.doesNotReject(() => app.cache.put(createCacheEntry('runtime-fallback')));
+  assert.equal((await app.cache.get('runtime-fallback')).processedText, 'cached result');
 });
 
 test('getContext option overrides host window fallback', async () => {
@@ -473,6 +1038,90 @@ test('repeated startup registers slash parser once', async () => {
   assert.equal(commands[0].name, '777');
 });
 
+test('concurrent startup coalesces to one app and one world-info listener', async () => {
+  const eventSource = createEventSource();
+  const windowRef = createWindowRef();
+  const options = {
+    autoMount: false,
+    getContext: () => ({
+      extensionSettings: {},
+      eventSource,
+      eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' }
+    })
+  };
+
+  const [first, second] = await Promise.all([
+    startTtAgentPlus727(windowRef, options),
+    startTtAgentPlus727(windowRef, options)
+  ]);
+
+  assert.equal(first, second);
+  assert.equal(eventSource.listenerCount('worldinfo_scan_done'), 1);
+});
+
+test('destroyed instance cannot overwrite the newer instance prompt', async () => {
+  const prompts = [];
+  const eventSource = createEventSource();
+  const oldList = createDeferred();
+  let deferOldScan = false;
+  const oldCacheStore = {
+    async list() {
+      return deferOldScan ? oldList.promise : [];
+    }
+  };
+  const scanA = createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, comment: '角色A', content: 'A', disable: false }]
+  ]);
+  const scanB = createWorldInfoScanEvent([
+    ['Lore.2', { uid: 2, comment: '角色B', content: 'B', disable: false }]
+  ]);
+  const [sourceA] = normalizeWorldInfoScan(scanA).entries;
+  const [sourceB] = normalizeWorldInfoScan(scanB).entries;
+  const context = {
+    chatId: 'chat-lifecycle',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt: (...args) => prompts.push(args)
+  };
+  const windowRef = createWindowRef();
+  const oldApp = await startTtAgentPlus727(windowRef, {
+    autoMount: false,
+    cacheStore: oldCacheStore,
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  deferOldScan = true;
+  const oldScanPromise = eventSource.emit('worldinfo_scan_done', scanA);
+  await waitForMicrotasks();
+
+  const newApp = await startTtAgentPlus727(windowRef, {
+    autoMount: false,
+    cacheStore: {
+      async list() {
+        return [createCacheEntry('new-cache', {
+          scopeId: 'chat-lifecycle',
+          sourceRefs: [sourceB],
+          processedText: '新实例 B'
+        })];
+      }
+    },
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', scanB);
+  oldList.resolve([createCacheEntry('old-cache', {
+    scopeId: 'chat-lifecycle',
+    sourceRefs: [sourceA],
+    processedText: '旧实例 A'
+  })]);
+  await oldScanPromise;
+
+  assert.notEqual(oldApp, newApp);
+  assert.match(prompts.at(-1)[1], /新实例 B/);
+  assert.doesNotMatch(prompts.at(-1)[1], /旧实例 A/);
+});
+
 test('slash callback opens latest app after repeated startup', async () => {
   const commands = [];
   const windowRef = createWindowRef();
@@ -574,9 +1223,65 @@ function createWindowRef(overrides = {}) {
   };
 }
 
+function createBrowserStorage() {
+  const storage = new Map();
+  return {
+    get length() {
+      return storage.size;
+    },
+    getItem(key) {
+      return storage.get(String(key)) ?? null;
+    },
+    setItem(key, value) {
+      storage.set(String(key), String(value));
+    },
+    removeItem(key) {
+      storage.delete(String(key));
+    },
+    key(index) {
+      return Array.from(storage.keys())[index] ?? null;
+    }
+  };
+}
+
+function createEventSource() {
+  const listeners = new Map();
+  return {
+    on(name, listener) {
+      const items = listeners.get(name) ?? [];
+      items.push(listener);
+      listeners.set(name, items);
+    },
+    removeListener(name, listener) {
+      listeners.set(name, (listeners.get(name) ?? []).filter((item) => item !== listener));
+    },
+    listenerCount(name) {
+      return (listeners.get(name) ?? []).length;
+    },
+    async emit(name, payload) {
+      for (const listener of [...(listeners.get(name) ?? [])]) {
+        await listener(payload);
+      }
+    }
+  };
+}
+
+function createWorldInfoScanEvent(entries) {
+  return {
+    state: { current: 1, next: 2, loopCount: 0 },
+    activated: { entries: new Map(entries), text: '' },
+    budget: { current: 100, overflowed: false }
+  };
+}
+
 function createCacheEntry(key, overrides = {}) {
   return {
     key,
+    scopeId: 'global',
+    ruleTemplateId: 'airp-character-default',
+    ruleVersion: 1,
+    modelProfileId: 'current',
+    promptVersion: 1,
     sourceRefs: [{ kind: 'world_info', uid: 'a', displayName: 'A' }],
     processedText: 'cached result',
     structuredSummary: { facts: ['A'] },
@@ -589,6 +1294,18 @@ function createCacheEntry(key, overrides = {}) {
     invalidationReason: null,
     ...overrides
   };
+}
+
+function createDeferred() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+async function waitForMicrotasks() {
+  await new Promise((resolve) => setImmediate(resolve));
 }
 
 function findStRuntimeDiagnostic(app) {

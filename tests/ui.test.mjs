@@ -67,6 +67,16 @@ test('stylesheet defaults to host-friendly dark and exposes light overrides', ()
   assert.match(css, /backdrop-filter/);
 });
 
+
+test('panel overlay is layered above host navigation chrome', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+
+  assert.match(css, /--ttap-layer-backdrop:\s*2147483000/);
+  assert.match(css, /--ttap-layer-panel:\s*2147483001/);
+  assert.match(css, /\.ttap-backdrop\s*{[\s\S]*z-index:\s*var\(--ttap-layer-backdrop\)/);
+  assert.match(css, /\.ttap-panel\s*{[\s\S]*z-index:\s*var\(--ttap-layer-panel\)/);
+});
+
 test('renderPanelHtml tolerates bad and missing state pieces', () => {
   const badStates = [
     null,

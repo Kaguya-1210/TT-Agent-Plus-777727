@@ -12,6 +12,8 @@
   --ttap-warning: #d8a548;
   --ttap-danger: #ff8a7a;
   --ttap-shadow: rgba(0, 0, 0, 0.34);
+  --ttap-layer-backdrop: 2147483000;
+  --ttap-layer-panel: 2147483001;
 }
 
 .ttap-panel[data-ttap-theme="light"],
@@ -62,7 +64,7 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
 .ttap-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 2999;
+  z-index: var(--ttap-layer-backdrop);
   background: rgba(0, 0, 0, 0.36);
   opacity: 1;
   transition: opacity 180ms ease;
@@ -76,7 +78,7 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
   position: fixed;
   top: 0;
   right: 0;
-  z-index: 3000;
+  z-index: var(--ttap-layer-panel);
   width: min(440px, calc(100vw - 8px));
   height: 100vh;
   height: 100dvh;

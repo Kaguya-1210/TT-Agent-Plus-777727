@@ -352,7 +352,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     const capturedSources = Array.isArray(captureSnapshot?.entries) ? captureSnapshot.entries : [];
     const ruleTemplateId = resolveRuleTemplateId(input.ruleTemplateId);
     const ruleTemplate = state.settings.rules.find((item) => item?.id === ruleTemplateId) ?? {};
-    const worldInfoRule = resolveWorldInfoRule(input.worldInfoRuleId, ruleTemplate.worldInfoRuleId);
+    const worldInfoRule = resolveWorldInfoRule(input, ruleTemplate.worldInfoRuleId);
     if (!capturedSources.length) {
       debug.warn('world-info', '当前没有可加工的世界书命中条目', {});
       return emptyCapturedDispatchResult({
@@ -722,10 +722,10 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     return rules.find((rule) => typeof rule?.id === 'string')?.id ?? 'airp-character-default';
   }
 
-  function resolveWorldInfoRule(inputRuleId, templateRuleId) {
-    const candidate = typeof inputRuleId === 'string'
-      ? inputRuleId.trim()
-      : (typeof templateRuleId === 'string' ? templateRuleId.trim() : '');
+  function resolveWorldInfoRule(input, templateRuleId) {
+    const hasExplicitRuleId = safeHasOwn(input, 'worldInfoRuleId');
+    const rawRuleId = hasExplicitRuleId ? safeProperty(input, 'worldInfoRuleId') : templateRuleId;
+    const candidate = typeof rawRuleId === 'string' ? rawRuleId.trim() : '';
     const rules = Array.isArray(state.settings.worldInfoRules) ? state.settings.worldInfoRules : [];
     const selected = rules.find((rule) => rule?.id === candidate)
       ?? rules.find((rule) => rule?.id === BUILTIN_ALL_WORLD_INFO_RULE_ID)
@@ -862,6 +862,15 @@ function safeProperty(value, key) {
     return value?.[key];
   } catch {
     return undefined;
+  }
+}
+
+function safeHasOwn(value, key) {
+  if (!value || (typeof value !== 'object' && typeof value !== 'function')) return false;
+  try {
+    return Object.hasOwn(value, key);
+  } catch {
+    return true;
   }
 }
 

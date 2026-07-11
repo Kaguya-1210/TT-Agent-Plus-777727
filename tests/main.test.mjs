@@ -592,6 +592,61 @@ test('dispatchCapturedWorldInfo uses the sub-AI default and invalid IDs fall bac
   assert.equal(invalidResult.passed, 2);
 });
 
+test('explicit invalid world-info rule values override the sub-AI default and fall back to all', async () => {
+  const eventSource = createEventSource();
+  const context = {
+    chatId: 'chat-explicit-invalid-world-rule',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {
+      [SETTINGS_KEY]: {
+        worldInfoRules: [{
+          id: 'custom-include',
+          name: 'Custom include',
+          mode: 'include',
+          entryUids: ['1'],
+          version: 3
+        }],
+        rules: [{
+          id: 'airp-character-default',
+          name: 'Character worker',
+          worldInfoRuleId: 'custom-include'
+        }]
+      }
+    },
+    setExtensionPrompt() {}
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    worldInfoRepository: createCatalogRepository('Lore'),
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, content: 'A', disable: false }],
+    ['Lore.2', { uid: 2, content: 'B', disable: false }]
+  ]));
+
+  const omitted = await app.dispatchCapturedWorldInfo();
+  assert.equal(omitted.worldInfoRuleId, 'custom-include');
+  assert.equal(omitted.passed, 1);
+
+  const unsafeObject = {
+    toString() {
+      throw new Error('worldInfoRuleId must not be stringified');
+    }
+  };
+  for (const worldInfoRuleId of [123, null, unsafeObject, '   ']) {
+    const result = await app.dispatchCapturedWorldInfo({ worldInfoRuleId });
+
+    assert.equal(result.worldInfoRuleId, 'world-info-all');
+    assert.deepEqual(
+      { captured: result.captured, passed: result.passed, excluded: result.excluded },
+      { captured: 2, passed: 2, excluded: 0 }
+    );
+  }
+});
+
 test('dispatchCapturedWorldInfo reports the selected rule when there are no captured entries', async () => {
   const app = await startTtAgentPlus727(createWindowRef(), {
     autoMount: false,

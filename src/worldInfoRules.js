@@ -13,15 +13,25 @@ function normalizeString(value, fallback = '') {
   return typeof value === 'string' ? value.trim() : fallback;
 }
 
+function normalizeUid(value) {
+  if (typeof value === 'string') {
+    const normalized = value.trim();
+    return normalized || null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+  return null;
+}
+
 function normalizeEntryUids(value) {
   if (!Array.isArray(value)) return [];
 
   const seen = new Set();
   const normalized = [];
   for (const uid of value) {
-    if (uid === null || uid === undefined) continue;
-    const normalizedUid = String(uid).trim();
-    if (!normalizedUid || seen.has(normalizedUid)) continue;
+    const normalizedUid = normalizeUid(uid);
+    if (normalizedUid === null || seen.has(normalizedUid)) continue;
     seen.add(normalizedUid);
     normalized.push(normalizedUid);
   }
@@ -52,7 +62,7 @@ export function normalizeWorldInfoRule(input) {
 }
 
 function entryUid(entry) {
-  return String(entry?.parentUid ?? entry?.uid ?? entry?.id);
+  return normalizeUid(entry?.parentUid ?? entry?.uid ?? entry?.id);
 }
 
 export function filterWorldInfoEntries(entries, ruleInput, catalogInput) {
@@ -60,12 +70,17 @@ export function filterWorldInfoEntries(entries, ruleInput, catalogInput) {
 
   const rule = normalizeWorldInfoRule(ruleInput);
   const catalog = isRecord(catalogInput) ? catalogInput : {};
-  if (rule.worldRef && rule.worldRef !== catalog.worldRef) return [];
+  const catalogWorldRef = normalizeString(catalog.worldRef);
+  const catalogWorldName = normalizeString(catalog.worldName);
+  if (!catalogWorldName) return [];
+  if (rule.worldRef && rule.worldRef !== catalogWorldRef) return [];
 
   const selectedUids = new Set(rule.entryUids);
   return entries.filter((entry) => {
-    if (!isRecord(entry) || entry.world !== catalog.worldName) return false;
-    const selected = selectedUids.has(entryUid(entry));
+    if (!isRecord(entry) || normalizeString(entry.world) !== catalogWorldName) return false;
+    const uid = entryUid(entry);
+    if (uid === null) return false;
+    const selected = selectedUids.has(uid);
     return rule.mode === WORLD_INFO_FILTER_MODES.INCLUDE ? selected : !selected;
   });
 }

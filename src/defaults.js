@@ -1,4 +1,17 @@
 import { APPROVAL_MODES, OUTPUT_MODES } from './constants.js';
+import { BUILTIN_ALL_WORLD_INFO_RULE_ID } from './worldInfoRules.js';
+
+export const DEFAULT_WORLD_INFO_RULES = Object.freeze([
+  {
+    id: BUILTIN_ALL_WORLD_INFO_RULE_ID,
+    name: '全部条目',
+    worldRef: '',
+    mode: 'exclude',
+    entryUids: [],
+    version: 1,
+    builtin: true
+  }
+]);
 
 export const DEFAULT_RULE_TEMPLATES = Object.freeze([
   {
@@ -13,6 +26,7 @@ export const DEFAULT_RULE_TEMPLATES = Object.freeze([
     ].join('\n'),
     outputSchema: 'json_summary_v1',
     modelProfileId: 'current',
+    worldInfoRuleId: BUILTIN_ALL_WORLD_INFO_RULE_ID,
     maxInputTokens: 60000,
     targetOutputTokens: 1800,
     allowChildDispatch: true,
@@ -32,6 +46,7 @@ export const DEFAULT_RULE_TEMPLATES = Object.freeze([
     ].join('\n'),
     outputSchema: 'json_summary_v1',
     modelProfileId: 'current',
+    worldInfoRuleId: BUILTIN_ALL_WORLD_INFO_RULE_ID,
     maxInputTokens: 60000,
     targetOutputTokens: 1200,
     allowChildDispatch: true,
@@ -58,5 +73,6 @@ export const DEFAULT_SETTINGS = Object.freeze({
   worldInfoCaptureEnabled: true,
   worldInfoBypassEnabled: true,
   workerAdapter: 'deterministic',
+  worldInfoRules: DEFAULT_WORLD_INFO_RULES,
   rules: DEFAULT_RULE_TEMPLATES
 });

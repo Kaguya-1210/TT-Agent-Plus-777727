@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { OUTPUT_MODES } from '../src/constants.js';
-import { DEFAULT_SETTINGS } from '../src/defaults.js';
+import { DEFAULT_SETTINGS, DEFAULT_WORLD_INFO_RULES } from '../src/defaults.js';
 import { createDebugLog } from '../src/debugLog.js';
 import { createInitialState } from '../src/state.js';
 import { mergeSettings } from '../src/settings.js';
@@ -105,6 +105,148 @@ test('mergeSettings normalizes invalid rule fields', () => {
   assert.equal(rule.maxChildWorkers, 8);
   assert.equal(rule.maxDepth, 0);
   assert.equal(rule.version, 1);
+});
+
+test('mergeSettings migrates legacy settings to the builtin world-info rule', () => {
+  const settings = mergeSettings({
+    rules: [
+      {
+        id: 'airp-character-default',
+        name: 'legacy character rule'
+      }
+    ]
+  });
+
+  assert.equal(settings.worldInfoRules[0].id, 'world-info-all');
+  assert.equal(settings.worldInfoRules[0].builtin, true);
+  assert.deepEqual(
+    settings.rules.map((rule) => rule.worldInfoRuleId),
+    ['world-info-all', 'world-info-all']
+  );
+  assert.deepEqual(DEFAULT_WORLD_INFO_RULES[0], {
+    id: 'world-info-all',
+    name: '全部条目',
+    worldRef: '',
+    mode: 'exclude',
+    entryUids: [],
+    version: 1,
+    builtin: true
+  });
+});
+
+test('mergeSettings persists and normalizes custom world-info rules', () => {
+  const settings = mergeSettings({
+    worldInfoRules: [
+      {
+        id: 'world-info-custom',
+        name: 'Custom selection',
+        worldRef: ' world.json ',
+        mode: 'include',
+        entryUids: [1, 1, 2, ' 2 ', '', null],
+        version: 2,
+        builtin: true,
+        unknownField: 'ignored'
+      }
+    ]
+  });
+  const customRule = settings.worldInfoRules[1];
+
+  assert.deepEqual(customRule, {
+    id: 'world-info-custom',
+    name: 'Custom selection',
+    mode: 'include',
+    worldRef: 'world.json',
+    entryUids: ['1', '2'],
+    version: 2,
+    builtin: false
+  });
+});
+
+test('mergeSettings returns fresh world-info rule arrays and entryUids', () => {
+  const defaultFirst = mergeSettings();
+  defaultFirst.worldInfoRules[0].entryUids.push('builtin-mutation');
+
+  const defaultSecond = mergeSettings();
+  const first = mergeSettings({
+    worldInfoRules: [
+      {
+        id: 'world-info-custom',
+        name: 'Custom selection',
+        entryUids: [1, 2]
+      }
+    ]
+  });
+  first.worldInfoRules[1].entryUids.push('custom-mutation');
+
+  const second = mergeSettings({
+    worldInfoRules: [
+      {
+        id: 'world-info-custom',
+        name: 'Custom selection',
+        entryUids: [1, 2]
+      }
+    ]
+  });
+
+  assert.deepEqual(defaultSecond.worldInfoRules[0].entryUids, []);
+  assert.deepEqual(second.worldInfoRules[1].entryUids, ['1', '2']);
+  assert.notEqual(defaultSecond.worldInfoRules, defaultFirst.worldInfoRules);
+  assert.notEqual(second.worldInfoRules, first.worldInfoRules);
+  assert.notEqual(defaultSecond.worldInfoRules[0], DEFAULT_WORLD_INFO_RULES[0]);
+  assert.notEqual(defaultSecond.worldInfoRules[0].entryUids, DEFAULT_WORLD_INFO_RULES[0].entryUids);
+});
+
+test('mergeSettings keeps the builtin world-info rule first and builtin', () => {
+  const omitted = mergeSettings({
+    worldInfoRules: [
+      { id: 'world-info-custom', name: 'Custom selection', entryUids: [] }
+    ]
+  });
+  const demoted = mergeSettings({
+    worldInfoRules: [
+      {
+        id: 'world-info-all',
+        name: 'Persisted override',
+        builtin: false,
+        entryUids: [7]
+      }
+    ]
+  });
+
+  assert.deepEqual(omitted.worldInfoRules.map((rule) => rule.id), [
+    'world-info-all',
+    'world-info-custom'
+  ]);
+  assert.equal(omitted.worldInfoRules[0].builtin, true);
+  assert.equal(demoted.worldInfoRules[0].id, 'world-info-all');
+  assert.equal(demoted.worldInfoRules[0].builtin, true);
+  assert.equal(demoted.worldInfoRules[0].name, 'Persisted override');
+  assert.deepEqual(demoted.worldInfoRules[0].entryUids, ['7']);
+});
+
+test('mergeSettings validates sub-AI world-info rule references after merging', () => {
+  const settings = mergeSettings({
+    worldInfoRules: [
+      { id: 'world-info-custom', name: 'Custom selection', entryUids: [3] }
+    ],
+    rules: [
+      {
+        id: 'airp-character-default',
+        worldInfoRuleId: 'missing-world-info-rule'
+      },
+      {
+        id: 'custom-sub-ai',
+        name: 'Custom sub AI',
+        worldInfoRuleId: 'world-info-custom'
+      }
+    ]
+  });
+
+  assert.equal(settings.rules[0].worldInfoRuleId, 'world-info-all');
+  assert.equal(
+    settings.rules.find((rule) => rule.id === 'custom-sub-ai').worldInfoRuleId,
+    'world-info-custom'
+  );
 });
 
 test('mergeSettings preserves default rules when one rule is overridden', () => {

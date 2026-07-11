@@ -1,5 +1,9 @@
 import { APPROVAL_MODES, OUTPUT_MODES } from './constants.js';
 import { DEFAULT_SETTINGS } from './defaults.js';
+import {
+  BUILTIN_ALL_WORLD_INFO_RULE_ID,
+  normalizeWorldInfoRule
+} from './worldInfoRules.js';
 
 const THEMES = new Set(['system', 'light', 'dark']);
 const APPROVAL_VALUES = new Set(Object.values(APPROVAL_MODES));
@@ -29,6 +33,7 @@ function normalizeRule(defaultRule, savedRule) {
     systemInstruction: nonEmptyString(source.systemInstruction, defaultRule.systemInstruction),
     outputSchema: nonEmptyString(source.outputSchema, defaultRule.outputSchema),
     modelProfileId: nonEmptyString(source.modelProfileId, defaultRule.modelProfileId),
+    worldInfoRuleId: nonEmptyString(source.worldInfoRuleId, defaultRule.worldInfoRuleId),
     maxInputTokens: clampInteger(source.maxInputTokens, defaultRule.maxInputTokens, 1000, 200000),
     targetOutputTokens: clampInteger(source.targetOutputTokens, defaultRule.targetOutputTokens, 100, 12000),
     allowChildDispatch: typeof source.allowChildDispatch === 'boolean'
@@ -64,9 +69,40 @@ function mergeRules(sourceRules, defaultRules) {
   return [...mergedDefaults, ...customRules];
 }
 
+function mergeWorldInfoRules(sourceRules, defaultRules) {
+  const savedRules = Array.isArray(sourceRules) ? sourceRules.filter(isRecord) : [];
+  const defaultBuiltinRule = defaultRules.find(
+    (rule) => rule.id === BUILTIN_ALL_WORLD_INFO_RULE_ID
+  ) ?? defaultRules[0];
+  const savedBuiltinRule = savedRules.find(
+    (rule) => typeof rule.id === 'string'
+      && rule.id.trim() === BUILTIN_ALL_WORLD_INFO_RULE_ID
+  );
+  const builtinRule = normalizeWorldInfoRule({
+    ...defaultBuiltinRule,
+    ...savedBuiltinRule,
+    id: BUILTIN_ALL_WORLD_INFO_RULE_ID,
+    builtin: true
+  });
+  const customRules = savedRules
+    .map((rule) => normalizeWorldInfoRule(rule))
+    .filter((rule) => rule.id !== BUILTIN_ALL_WORLD_INFO_RULE_ID)
+    .map((rule) => ({ ...rule, builtin: false }));
+
+  return [builtinRule, ...customRules];
+}
+
 export function mergeSettings(saved = {}) {
   const source = isRecord(saved) ? saved : {};
   const defaults = DEFAULT_SETTINGS;
+  const worldInfoRules = mergeWorldInfoRules(source.worldInfoRules, defaults.worldInfoRules);
+  const worldInfoRuleIds = new Set(worldInfoRules.map((rule) => rule.id));
+  const rules = mergeRules(source.rules, defaults.rules).map((rule) => ({
+    ...rule,
+    worldInfoRuleId: worldInfoRuleIds.has(rule.worldInfoRuleId)
+      ? rule.worldInfoRuleId
+      : BUILTIN_ALL_WORLD_INFO_RULE_ID
+  }));
 
   return {
     enabled: typeof source.enabled === 'boolean' ? source.enabled : defaults.enabled,
@@ -94,6 +130,7 @@ export function mergeSettings(saved = {}) {
     workerAdapter: WORKER_ADAPTERS.has(source.workerAdapter)
       ? source.workerAdapter
       : defaults.workerAdapter,
-    rules: mergeRules(source.rules, defaults.rules)
+    worldInfoRules,
+    rules
   };
 }

@@ -35,6 +35,20 @@ export function createInitialState(overrides = {}) {
       budget: { current: 0, overflowed: false },
       scan: { current: 0, next: 0, loopCount: 0 }
     },
+    worldInfoCatalog: {
+      characterRef: '',
+      characterName: '',
+      worldRef: '',
+      worldName: '',
+      entries: []
+    },
+    ruleView: 'ai',
+    worldInfoRuleEditor: {
+      view: 'list',
+      editingId: null,
+      search: '',
+      draft: null
+    },
     lastInjection: null,
     warnings: [],
     ...rest

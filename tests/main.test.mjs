@@ -1183,6 +1183,125 @@ test('dispatchCapturedWorldInfo rejects a capture from a previous chat', async (
   assert.equal(app.state.tasks.length, 0);
 });
 
+test('stale-scope dispatch does not block manual or public prompt refreshes', async () => {
+  const prompts = [];
+  const eventSource = createEventSource();
+  let chatId = 'chat-old-scope';
+  const context = {
+    getCurrentChatId: () => chatId,
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt: (...args) => prompts.push(args)
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    worldInfoRepository: createCatalogRepository('Lore', { entries: [{ uid: '1' }] }),
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, content: 'OLD-SCOPE-WORLD', disable: false }]
+  ]));
+  await app.dispatchCapturedWorldInfo();
+
+  chatId = 'chat-current-scope';
+  await app.cache.put(createCacheEntry('existing-manual-current-scope', {
+    scopeId: chatId,
+    sourceRefs: [{ kind: 'manual', uid: 'manual-existing', displayName: 'Existing manual' }],
+    processedText: 'EXISTING-LEGAL-MANUAL'
+  }));
+  const stale = await app.dispatchCapturedWorldInfo();
+  const publicBlock = await app.refreshPromptInjection();
+
+  assert.equal(stale.staleCapture, true);
+  assert.match(publicBlock, /EXISTING-LEGAL-MANUAL/);
+  assert.doesNotMatch(publicBlock, /OLD-SCOPE-WORLD/);
+
+  await app.dispatchManualSource({ content: 'NEW-LEGAL-MANUAL' });
+  assert.match(prompts.at(-1)[1], /NEW-LEGAL-MANUAL/);
+  assert.doesNotMatch(prompts.at(-1)[1], /OLD-SCOPE-WORLD/);
+});
+
+test('same-identity public catalog refresh preserves world and manual prompt caches', async () => {
+  const prompts = [];
+  const eventSource = createEventSource();
+  const context = {
+    chatId: 'chat-same-identity-refresh',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt: (...args) => prompts.push(args)
+  };
+  const catalog = createWorldInfoCatalog('Lore', {
+    characterRef: 'character:same.png',
+    worldRef: 'embedded:character:same.png',
+    entries: [{ uid: '1' }]
+  });
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    worldInfoRepository: { readActive: async () => structuredClone(catalog) },
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, content: 'SAME-IDENTITY-WORLD', disable: false }]
+  ]));
+  await app.dispatchCapturedWorldInfo();
+  await app.dispatchManualSource({ content: 'SAME-IDENTITY-MANUAL' });
+
+  await app.refreshActiveCharacterWorldInfo();
+  const block = await app.refreshPromptInjection();
+
+  assert.match(block, /SAME-IDENTITY-WORLD/);
+  assert.match(block, /SAME-IDENTITY-MANUAL/);
+  await app.dispatchManualSource({ content: 'SAME-IDENTITY-MANUAL-2' });
+  assert.match(prompts.at(-1)[1], /SAME-IDENTITY-WORLD/);
+  assert.match(prompts.at(-1)[1], /SAME-IDENTITY-MANUAL-2/);
+});
+
+test('changed-identity public catalog refresh suppresses world caches but keeps manual caches', async () => {
+  const prompts = [];
+  const eventSource = createEventSource();
+  let catalog = createWorldInfoCatalog('Shared', {
+    characterRef: 'character:old.png',
+    worldRef: 'embedded:character:old.png',
+    entries: [{ uid: '1' }]
+  });
+  const context = {
+    chatId: 'chat-changed-identity-refresh',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt: (...args) => prompts.push(args)
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    worldInfoRepository: { readActive: async () => structuredClone(catalog) },
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Shared.1', { uid: 1, content: 'OLD-IDENTITY-WORLD', disable: false }]
+  ]));
+  await app.dispatchCapturedWorldInfo();
+  await app.dispatchManualSource({ content: 'CURRENT-MANUAL' });
+
+  catalog = createWorldInfoCatalog('Shared', {
+    characterRef: 'character:new.png',
+    worldRef: 'embedded:character:new.png',
+    entries: [{ uid: '1' }]
+  });
+  await app.refreshActiveCharacterWorldInfo();
+  const block = await app.refreshPromptInjection();
+
+  assert.match(block, /CURRENT-MANUAL/);
+  assert.doesNotMatch(block, /OLD-IDENTITY-WORLD/);
+  await app.dispatchManualSource({ content: 'CURRENT-MANUAL-2' });
+  assert.match(prompts.at(-1)[1], /CURRENT-MANUAL-2/);
+  assert.doesNotMatch(prompts.at(-1)[1], /OLD-IDENTITY-WORLD/);
+});
+
 test('an older character catalog read cannot continue dispatch after a newer read wins', async () => {
   const eventSource = createEventSource();
   const oldRead = createDeferred();
@@ -1326,9 +1445,10 @@ test('failed catalog binding leaves capture identity empty and dispatches fail c
 
   assert.equal(app.state.worldInfoCapture.characterRef, '');
   assert.equal(app.state.worldInfoCapture.worldRef, '');
+  assert.equal(app.state.worldInfoCapture.identityReady, false);
   const result = await app.dispatchCapturedWorldInfo();
 
-  assert.equal(readCount, 2);
+  assert.equal(readCount, 1);
   assert.equal(result.staleCapture, true);
   assert.equal(result.enqueued, 0);
   assert.equal(app.state.tasks.length, 0);
@@ -1381,6 +1501,77 @@ test('older catalog binding cannot overwrite a newer world-info scan', async () 
   assert.equal(app.state.worldInfoCapture.worldRef, 'embedded:character:new.png');
 });
 
+test('a pending scan replaces the old capture and cannot dispatch until identity is bound', async () => {
+  const eventSource = createEventSource();
+  const pendingNewIdentity = createDeferred();
+  let readCount = 0;
+  const oldCatalog = createWorldInfoCatalog('Shared', {
+    characterRef: 'character:old.png',
+    worldRef: 'embedded:character:old.png',
+    entries: [{ uid: '1' }]
+  });
+  const newCatalog = createWorldInfoCatalog('Shared', {
+    characterRef: 'character:new.png',
+    worldRef: 'embedded:character:new.png',
+    entries: [{ uid: '2' }]
+  });
+  const worldInfoRepository = {
+    async readActive() {
+      readCount += 1;
+      if (readCount === 1) return structuredClone(oldCatalog);
+      if (readCount === 2) return pendingNewIdentity.promise;
+      return structuredClone(newCatalog);
+    }
+  };
+  const context = {
+    chatId: 'chat-pending-capture',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt() {}
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    worldInfoRepository,
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Shared.1', { uid: 1, content: 'OLD-CAPTURE-BODY', disable: false }]
+  ]));
+
+  const newScanPromise = eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Shared.2', { uid: 2, content: 'NEW-CAPTURE-BODY', disable: false }]
+  ]));
+  await waitForMicrotasks();
+  assert.equal(app.state.worldInfoCapture.entries[0].uid, 2);
+  assert.equal(app.state.worldInfoCapture.identityReady, false);
+  assert.equal(app.state.worldInfoCapture.characterRef, '');
+  assert.equal(app.state.worldInfoCapture.worldRef, '');
+
+  await app.refreshActiveCharacterWorldInfo();
+  assert.equal(readCount, 3);
+
+  const pendingDispatch = await app.dispatchCapturedWorldInfo();
+  assert.equal(pendingDispatch.staleCapture, true);
+  assert.equal(pendingDispatch.enqueued, 0);
+  assert.equal(readCount, 3);
+  assert.equal(app.state.tasks.length, 0);
+
+  pendingNewIdentity.resolve(structuredClone(newCatalog));
+  await newScanPromise;
+  assert.equal(app.state.worldInfoCapture.entries[0].uid, 2);
+  assert.equal(app.state.worldInfoCapture.identityReady, true);
+  assert.equal(app.state.worldInfoCapture.characterRef, 'character:new.png');
+  assert.equal(app.state.worldInfoCapture.worldRef, 'embedded:character:new.png');
+
+  const readyDispatch = await app.dispatchCapturedWorldInfo();
+  assert.equal(readyDispatch.staleCapture, false);
+  assert.equal(readyDispatch.enqueued, 1);
+  assert.match(JSON.stringify(app.state.tasks), /NEW-CAPTURE-BODY/);
+  assert.doesNotMatch(JSON.stringify(app.state.tasks), /OLD-CAPTURE-BODY/);
+});
+
 test('destroy during scan catalog binding prevents capture and render writes', async () => {
   const eventSource = createEventSource();
   const pendingRead = createDeferred();
@@ -1403,6 +1594,8 @@ test('destroy during scan catalog binding prevents capture and render writes', a
     ['Lore.1', { uid: 1, content: 'Late scan', disable: false }]
   ]));
   await waitForMicrotasks();
+  const pendingCapture = app.state.worldInfoCapture;
+  assert.equal(pendingCapture.identityReady, false);
   app.destroy();
   const renderCountAfterDestroy = root.renderCount;
   pendingRead.resolve(createWorldInfoCatalog('Lore', {
@@ -1411,7 +1604,7 @@ test('destroy during scan catalog binding prevents capture and render writes', a
   }));
   await scanPromise;
 
-  assert.equal(app.state.worldInfoCapture.capturedAt, null);
+  assert.deepEqual(app.state.worldInfoCapture, pendingCapture);
   assert.equal(root.renderCount, renderCountAfterDestroy);
 });
 

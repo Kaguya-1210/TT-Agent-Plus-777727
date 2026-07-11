@@ -219,14 +219,16 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
 
   async function refreshPromptInjection(options = {}) {
     if (destroyed) return '';
-    const effectiveOptions = resolvePromptRefreshOptions(options);
-    if (!isPromptRefreshContextCurrent(effectiveOptions)) return '';
+    const requestedOptions = options && typeof options === 'object' ? options : {};
+    const effectiveOptions = resolvePromptRefreshOptions(requestedOptions);
+    const worldInfoContextCurrent = isPromptRefreshContextCurrent(effectiveOptions);
+    if (hasExplicitWorldInfoRefreshContext(requestedOptions) && !worldInfoContextCurrent) return '';
     const refreshSequence = ++promptRefreshSequence;
     let entries;
     try {
       entries = await cache.list();
     } catch (error) {
-      if (!canCommitPromptRefresh(refreshSequence, effectiveOptions)) return '';
+      if (!canCommitPromptRefresh(refreshSequence, effectiveOptions, worldInfoContextCurrent)) return '';
       const message = errorMessage(error);
       debug.error('prompt', 'cache list failed', { error: message });
       state = {
@@ -240,7 +242,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     }
 
     if (!state.settings.promptInjectionEnabled) {
-      if (!canCommitPromptRefresh(refreshSequence, effectiveOptions)) return '';
+      if (!canCommitPromptRefresh(refreshSequence, effectiveOptions, worldInfoContextCurrent)) return '';
       state = { ...state, cacheEntries: entries };
       setProcessedPrompt('');
       state = { ...state, lastInjection: { count: 0, length: 0 } };
@@ -257,7 +259,9 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     const scopeId = typeof effectiveOptions.scopeId === 'string' && effectiveOptions.scopeId
       ? effectiveOptions.scopeId
       : currentScopeId();
-    const ruleScopedEntries = filterCacheEntriesByWorldInfoRule(entries, effectiveOptions);
+    const ruleScopedEntries = worldInfoContextCurrent
+      ? filterCacheEntriesByWorldInfoRule(entries, effectiveOptions)
+      : entries.filter((entry) => !isWorldInfoCacheEntry(entry));
     const selectionSourceRefs = Array.isArray(activeSourceRefs)
       ? [...activeSourceRefs, ...collectNonWorldInfoCacheSourceRefs(ruleScopedEntries)]
       : activeSourceRefs;
@@ -273,7 +277,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     const bypassed = state.settings.worldInfoBypassEnabled && effectiveOptions.eventData
       ? removeCoveredWorldInfoEntries(effectiveOptions.eventData, coveredSourceRefs)
       : 0;
-    if (!canCommitPromptRefresh(refreshSequence, effectiveOptions)) return block;
+    if (!canCommitPromptRefresh(refreshSequence, effectiveOptions, worldInfoContextCurrent)) return block;
     state = { ...state, cacheEntries: entries };
     setProcessedPrompt(block);
     state = {
@@ -316,7 +320,11 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
   }
 
   async function refreshActiveCharacterWorldInfo() {
-    return (await readActiveCharacterWorldInfo()).catalog;
+    const catalogRead = await readActiveCharacterWorldInfo();
+    if (catalogRead.succeeded && catalogRead.current) {
+      reconcileActiveWorldInfoPromptContext(catalogRead.catalog, catalogRead.generation);
+    }
+    return catalogRead.catalog;
   }
 
   async function readActiveCharacterWorldInfo() {
@@ -338,7 +346,21 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
       state = { ...state, worldInfoCatalog: cloneValue(catalog) };
       render();
     }
-    return { catalog: cloneValue(catalog), generation, current };
+    return { catalog: cloneValue(catalog), generation, current, succeeded };
+  }
+
+  async function loadWorldInfoCatalogForScan() {
+    try {
+      return {
+        catalog: normalizeWorldInfoCatalog(await worldInfoRepository.readActive()),
+        succeeded: true
+      };
+    } catch (error) {
+      safeDebug(debug, 'warn', 'world-info', '读取当前角色世界书目录失败', {
+        error: safeErrorMessage(error)
+      });
+      return { catalog: emptyWorldInfoCatalog(), succeeded: false };
+    }
   }
 
   async function dispatchManualSource(input = {}) {
@@ -374,12 +396,28 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
   async function dispatchCapturedWorldInfo(input = {}) {
     if (destroyed) return emptyCapturedDispatchResult({ staleCapture: true });
     const captureSnapshot = cloneValue(state.worldInfoCapture);
-    const captureSequence = worldInfoScanSequence;
+    const captureSequence = captureSnapshot?.scanSequence;
     const captureScopeId = captureSnapshot?.scopeId ?? 'global';
     const capturedSources = Array.isArray(captureSnapshot?.entries) ? captureSnapshot.entries : [];
     const ruleTemplateId = resolveRuleTemplateId(input.ruleTemplateId);
     const ruleTemplate = state.settings.rules.find((item) => item?.id === ruleTemplateId) ?? {};
     const worldInfoRule = resolveWorldInfoRule(input, ruleTemplate.worldInfoRuleId);
+    if (!isDispatchCaptureReady(captureSnapshot, captureSequence, captureScopeId)) {
+      debug.warn('world-info', '本轮世界书捕获尚未就绪或已过期', {
+        captureScopeId,
+        currentScopeId: currentScopeId(),
+        scanSequence: Number.isInteger(captureSequence) ? captureSequence : null,
+        currentScanSequence: worldInfoScanSequence,
+        identityReady: captureSnapshot?.identityReady === true
+      });
+      return emptyCapturedDispatchResult({
+        ...summarizeWorldInfoFilter(capturedSources, []),
+        worldInfoRuleId: worldInfoRule.id,
+        worldInfoRuleVersion: worldInfoRule.version,
+        staleCapture: true
+      });
+    }
+    const previousPromptContext = { ...activeWorldInfoPromptContext };
     const promptContextToken = activateWorldInfoPromptRule(worldInfoRule, captureSequence);
     if (!capturedSources.length) {
       debug.warn('world-info', '当前没有可加工的世界书命中条目', {});
@@ -406,6 +444,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
       });
     }
     if (captureScopeId !== currentScopeId()) {
+      restoreActiveWorldInfoPromptContext(promptContextToken, previousPromptContext);
       debug.warn('world-info', '本轮世界书捕获已过期，请重新触发扫描', {
         captureScopeId,
         currentScopeId: currentScopeId()
@@ -420,9 +459,17 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     const catalogRead = await readActiveCharacterWorldInfo();
     const catalog = catalogRead.catalog;
     if (
-      !catalogRead.current
+      !catalogRead.succeeded
+      || !catalogRead.current
       || !isWorldInfoDispatchCurrent(captureSequence, captureScopeId, catalogRead.generation)
     ) {
+      const invalidatedPromptContext = invalidateActiveWorldInfoPromptRule(promptContextToken, {
+        scanSequence: captureSequence,
+        catalogGeneration: catalogRead.generation,
+        characterRef: catalog.characterRef,
+        worldRef: catalog.worldRef
+      });
+      if (invalidatedPromptContext) await refreshPromptInjection();
       return emptyCapturedDispatchResult({
         ...summarizeWorldInfoFilter(capturedSources, []),
         worldInfoRuleId: worldInfoRule.id,
@@ -437,21 +484,19 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
       worldRef: catalog.worldRef
     });
     if (!captureIdentityMatchesCatalog(captureSnapshot, catalog)) {
+      invalidateActiveWorldInfoPromptRule(promptContextToken, {
+        scanSequence: captureSequence,
+        catalogGeneration: catalogRead.generation,
+        characterRef: catalog.characterRef,
+        worldRef: catalog.worldRef
+      });
       safeDebug(debug, 'warn', 'world-info', '世界书捕获身份与当前角色目录不一致', {
         captureCharacterRef: safeString(captureSnapshot?.characterRef),
         captureWorldRef: safeString(captureSnapshot?.worldRef),
         currentCharacterRef: safeString(catalog.characterRef),
         currentWorldRef: safeString(catalog.worldRef)
       });
-      await refreshPromptInjection({
-        activeSourceRefs: [],
-        scopeId: captureScopeId,
-        scanSequence: captureSequence,
-        catalogGeneration: catalogRead.generation,
-        promptContextToken,
-        worldInfoRuleId: worldInfoRule.id,
-        worldInfoRuleVersion: worldInfoRule.version
-      });
+      await refreshPromptInjection();
       return emptyCapturedDispatchResult({
         ...summarizeWorldInfoFilter(capturedSources, []),
         worldInfoRuleId: worldInfoRule.id,
@@ -622,26 +667,57 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
   async function handleWorldInfoCapture(capture, eventData) {
     if (destroyed || !state.settings.worldInfoCaptureEnabled) return;
     const scanSequence = ++worldInfoScanSequence;
-    const promptContextToken = invalidateActiveWorldInfoPromptContext(scanSequence);
-    const catalogRead = await readActiveCharacterWorldInfo();
-    if (
-      !catalogRead.current
-      || !isWorldInfoScanBindingCurrent(scanSequence, capture.scopeId, catalogRead.generation)
-    ) {
+    invalidateActiveWorldInfoPromptContext(scanSequence);
+    const pendingCapture = {
+      ...capture,
+      scanSequence,
+      identityReady: false,
+      catalogGeneration: null,
+      characterRef: '',
+      worldRef: ''
+    };
+    state = { ...state, worldInfoCapture: pendingCapture };
+    render();
+
+    const refreshGenerationAtStart = worldInfoRefreshSequence;
+    const catalogRead = await loadWorldInfoCatalogForScan();
+    if (!isWorldInfoScanBindingCurrent(scanSequence)) {
+      return;
+    }
+    if (!catalogRead.succeeded) {
+      await refreshPromptInjection();
       return;
     }
     const characterRef = safeString(catalogRead.catalog.characterRef);
     const worldRef = safeString(catalogRead.catalog.worldRef);
     const identityBound = Boolean(characterRef && worldRef);
+    const catalogRefreshUnchanged = refreshGenerationAtStart === worldInfoRefreshSequence;
+    const catalogMatchesCurrent = captureIdentityMatchesCatalog(
+      { characterRef, worldRef },
+      state.worldInfoCatalog
+    );
+    const promptIdentityReady = Boolean(
+      identityBound
+      && (catalogRefreshUnchanged || catalogMatchesCurrent)
+      && currentScopeId() === capture.scopeId
+    );
     const boundCapture = {
       ...capture,
+      scanSequence,
+      identityReady: identityBound,
+      catalogGeneration: worldInfoRefreshSequence,
       characterRef: identityBound ? characterRef : '',
       worldRef: identityBound ? worldRef : ''
     };
-    state = { ...state, worldInfoCapture: boundCapture };
-    bindActiveWorldInfoPromptContext(promptContextToken, {
+    state = {
+      ...state,
+      worldInfoCapture: boundCapture,
+      ...(catalogRefreshUnchanged ? { worldInfoCatalog: cloneValue(catalogRead.catalog) } : {})
+    };
+    const promptContextToken = bindWorldInfoScanPromptContext({
+      identityReady: promptIdentityReady,
       scanSequence,
-      catalogGeneration: catalogRead.generation,
+      catalogGeneration: worldInfoRefreshSequence,
       characterRef: boundCapture.characterRef,
       worldRef: boundCapture.worldRef
     });
@@ -653,14 +729,18 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
       characterRef: boundCapture.characterRef,
       worldRef: boundCapture.worldRef
     });
-    await refreshPromptInjection({
-      activeSourceRefs: identityBound ? boundCapture.entries : [],
-      scopeId: boundCapture.scopeId,
-      eventData,
-      scanSequence,
-      catalogGeneration: catalogRead.generation,
-      promptContextToken
-    });
+    if (promptIdentityReady) {
+      await refreshPromptInjection({
+        activeSourceRefs: boundCapture.entries,
+        scopeId: boundCapture.scopeId,
+        eventData,
+        scanSequence,
+        catalogGeneration: worldInfoRefreshSequence,
+        promptContextToken
+      });
+    } else {
+      await refreshPromptInjection();
+    }
   }
 
   function setProcessedPrompt(text) {
@@ -915,6 +995,79 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     return true;
   }
 
+  function bindWorldInfoScanPromptContext({
+    identityReady,
+    scanSequence,
+    catalogGeneration,
+    characterRef,
+    worldRef
+  } = {}) {
+    const token = ++worldInfoPromptContextSequence;
+    activeWorldInfoPromptContext = {
+      ...activeWorldInfoPromptContext,
+      token,
+      ready: identityReady === true,
+      scanSequence: Number.isInteger(scanSequence) ? scanSequence : null,
+      catalogGeneration: Number.isInteger(catalogGeneration) ? catalogGeneration : null,
+      characterRef: safeString(characterRef),
+      worldRef: safeString(worldRef)
+    };
+    return token;
+  }
+
+  function invalidateActiveWorldInfoPromptRule(token, {
+    scanSequence,
+    catalogGeneration,
+    characterRef,
+    worldRef
+  } = {}) {
+    if (activeWorldInfoPromptContext.token !== token) return false;
+    activeWorldInfoPromptContext = {
+      ...activeWorldInfoPromptContext,
+      token: ++worldInfoPromptContextSequence,
+      ready: false,
+      scanSequence: Number.isInteger(scanSequence) ? scanSequence : null,
+      catalogGeneration: Number.isInteger(catalogGeneration) ? catalogGeneration : null,
+      characterRef: safeString(characterRef),
+      worldRef: safeString(worldRef)
+    };
+    return true;
+  }
+
+  function restoreActiveWorldInfoPromptContext(token, previousContext) {
+    if (activeWorldInfoPromptContext.token !== token) return false;
+    activeWorldInfoPromptContext = {
+      ...previousContext,
+      token: ++worldInfoPromptContextSequence
+    };
+    return true;
+  }
+
+  function reconcileActiveWorldInfoPromptContext(catalog, catalogGeneration) {
+    const characterRef = safeString(catalog?.characterRef);
+    const worldRef = safeString(catalog?.worldRef);
+    const sameIdentity = Boolean(
+      characterRef
+      && worldRef
+      && characterRef === activeWorldInfoPromptContext.characterRef
+      && worldRef === activeWorldInfoPromptContext.worldRef
+    );
+    const captureConfirmsIdentity = Boolean(
+      state.worldInfoCapture?.identityReady === true
+      && state.worldInfoCapture?.scanSequence === activeWorldInfoPromptContext.scanSequence
+      && captureIdentityMatchesCatalog(state.worldInfoCapture, catalog)
+    );
+    activeWorldInfoPromptContext = {
+      ...activeWorldInfoPromptContext,
+      ...(sameIdentity
+        ? { ready: activeWorldInfoPromptContext.ready || captureConfirmsIdentity }
+        : { token: ++worldInfoPromptContextSequence, ready: false }),
+      catalogGeneration: Number.isInteger(catalogGeneration) ? catalogGeneration : null,
+      characterRef,
+      worldRef
+    };
+  }
+
   function invalidateActiveWorldInfoPromptContext(scanSequence) {
     const token = ++worldInfoPromptContextSequence;
     activeWorldInfoPromptContext = {
@@ -967,26 +1120,45 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     return !destroyed && currentScan && currentCatalog && currentPromptContext;
   }
 
-  function canCommitPromptRefresh(refreshSequence, options = {}) {
+  function canCommitPromptRefresh(refreshSequence, options = {}, requireWorldInfoContext = true) {
     const currentRefresh = refreshSequence === promptRefreshSequence;
-    return currentRefresh && isPromptRefreshContextCurrent(options);
+    return Boolean(
+      !destroyed
+      && currentRefresh
+      && (!requireWorldInfoContext || isPromptRefreshContextCurrent(options))
+    );
+  }
+
+  function isDispatchCaptureReady(capture, captureSequence, scopeId) {
+    return Boolean(
+      capture?.capturedAt != null
+      && capture?.identityReady === true
+      && Number.isInteger(captureSequence)
+      && captureSequence === worldInfoScanSequence
+      && state.worldInfoCapture?.scanSequence === captureSequence
+      && state.worldInfoCapture?.identityReady === true
+      && state.worldInfoCapture?.scopeId === scopeId
+      && currentScopeId() === scopeId
+    );
   }
 
   function isCaptureCurrent(captureSequence, scopeId) {
     return Boolean(
       !destroyed
       && captureSequence === worldInfoScanSequence
+      && state.worldInfoCapture?.scanSequence === captureSequence
+      && state.worldInfoCapture?.identityReady === true
       && state.worldInfoCapture?.scopeId === scopeId
       && currentScopeId() === scopeId
     );
   }
 
-  function isWorldInfoScanBindingCurrent(scanSequence, scopeId, catalogGeneration) {
+  function isWorldInfoScanBindingCurrent(scanSequence) {
     return Boolean(
       !destroyed
       && scanSequence === worldInfoScanSequence
-      && catalogGeneration === worldInfoRefreshSequence
-      && currentScopeId() === scopeId
+      && state.worldInfoCapture?.scanSequence === scanSequence
+      && state.worldInfoCapture?.identityReady === false
     );
   }
 
@@ -1053,6 +1225,16 @@ function taskWorldInfoRuleFilter(task) {
     ...(Number.isInteger(catalogGeneration) ? { catalogGeneration } : {}),
     ...(Number.isInteger(promptContextToken) ? { promptContextToken } : {})
   };
+}
+
+function hasExplicitWorldInfoRefreshContext(options) {
+  return [
+    'worldInfoRuleId',
+    'worldInfoRuleVersion',
+    'scanSequence',
+    'catalogGeneration',
+    'promptContextToken'
+  ].some((key) => safeHasOwn(options, key));
 }
 
 function filterCacheEntriesByWorldInfoRule(entries, options) {

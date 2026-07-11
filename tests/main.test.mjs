@@ -636,7 +636,7 @@ test('explicit invalid world-info rule values override the sub-AI default and fa
       throw new Error('worldInfoRuleId must not be stringified');
     }
   };
-  for (const worldInfoRuleId of [123, null, unsafeObject, '   ']) {
+  for (const worldInfoRuleId of [123, null, unsafeObject, '   ', 'missing-rule']) {
     const result = await app.dispatchCapturedWorldInfo({ worldInfoRuleId });
 
     assert.equal(result.worldInfoRuleId, 'world-info-all');

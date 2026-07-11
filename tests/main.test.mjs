@@ -226,6 +226,7 @@ test('world-info scan capture updates state and keeps uncached original entries 
   };
   const app = await startTtAgentPlus727(createWindowRef(), {
     autoMount: false,
+    worldInfoRepository: createCatalogRepository('Lore'),
     getContext: () => context,
     extensionPromptTypes: { IN_PROMPT: 7 }
   });
@@ -254,6 +255,7 @@ test('world-info scan injects matching processed cache and bypasses covered orig
   };
   const app = await startTtAgentPlus727(createWindowRef(), {
     autoMount: false,
+    worldInfoRepository: createCatalogRepository('Lore'),
     getContext: () => context,
     extensionPromptTypes: { IN_PROMPT: 7 }
   });
@@ -328,6 +330,7 @@ test('empty world-info scan clears the previous processed prompt', async () => {
   };
   const app = await startTtAgentPlus727(createWindowRef(), {
     autoMount: false,
+    worldInfoRepository: createCatalogRepository('Lore'),
     getContext: () => context,
     extensionPromptTypes: { IN_PROMPT: 7 }
   });
@@ -383,6 +386,7 @@ test('newest concurrent world-info scan owns the final prompt', async () => {
   const app = await startTtAgentPlus727(createWindowRef(), {
     autoMount: false,
     cacheStore,
+    worldInfoRepository: createCatalogRepository('Lore'),
     getContext: () => context,
     extensionPromptTypes: { IN_PROMPT: 7 }
   });
@@ -444,6 +448,92 @@ test('newest concurrent prompt refresh owns the final prompt', async () => {
 
   assert.match(prompts.at(-1)[1], /较新的提示词/);
   assert.doesNotMatch(prompts.at(-1)[1], /较旧的提示词/);
+});
+
+test('stale task refresh cannot invalidate a current cache-hit prompt refresh', async () => {
+  const prompts = [];
+  const eventSource = createEventSource();
+  const currentList = createDeferred();
+  const entries = new Map();
+  let sourceRefs = [];
+  let deferCurrentList = false;
+  let currentListPending = false;
+  const cacheStore = {
+    async get(key) {
+      if (!key.includes('::r2::')) return entries.get(key) ?? null;
+      const parts = key.split('::');
+      const entry = createCacheEntry(key, {
+        scopeId: 'chat-stale-task-refresh',
+        sourceHash: parts[1],
+        ruleTemplateId: 'airp-character-default',
+        ruleVersion: 1,
+        worldInfoRuleId: 'r2',
+        worldInfoRuleVersion: 1,
+        sourceRefs: structuredClone(sourceRefs),
+        processedText: 'CURRENT-R2-CACHE-HIT',
+        tokenEstimate: 1
+      });
+      entries.set(key, entry);
+      return structuredClone(entry);
+    },
+    async put(entry) {
+      entries.set(entry.key, structuredClone(entry));
+      return structuredClone(entry);
+    },
+    async list() {
+      if (deferCurrentList && !currentListPending) {
+        currentListPending = true;
+        return currentList.promise;
+      }
+      return [...entries.values()].map((entry) => structuredClone(entry));
+    },
+    async remove(key) {
+      entries.delete(key);
+    }
+  };
+  const context = {
+    chatId: 'chat-stale-task-refresh',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {
+      [SETTINGS_KEY]: {
+        approvalMode: 'every_dispatch',
+        worldInfoRules: [
+          { id: 'r1', name: 'Rule one', mode: 'include', entryUids: ['1'], version: 1 },
+          { id: 'r2', name: 'Rule two', mode: 'include', entryUids: ['1'], version: 1 }
+        ]
+      }
+    },
+    setExtensionPrompt: (...args) => prompts.push(args)
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    cacheStore,
+    worldInfoRepository: createCatalogRepository('Lore', { entries: [{ uid: '1' }] }),
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, content: 'Source', disable: false }]
+  ]));
+  sourceRefs = app.state.worldInfoCapture.entries;
+  const oldDispatch = await app.dispatchCapturedWorldInfo({ worldInfoRuleId: 'r1' });
+  assert.equal(app.state.tasks[0].state, 'awaiting_approval');
+
+  deferCurrentList = true;
+  const currentDispatchPromise = app.dispatchCapturedWorldInfo({ worldInfoRuleId: 'r2' });
+  await waitForMicrotasks();
+  assert.equal(currentListPending, true);
+
+  assert.equal(app.dispatcher.approve(oldDispatch.taskIds[0]), true);
+  await app.pumpDispatcher();
+  currentList.resolve([...entries.values()].map((entry) => structuredClone(entry)));
+  const currentDispatch = await currentDispatchPromise;
+
+  assert.equal(currentDispatch.cacheHits, 1);
+  assert.equal(currentDispatch.staleCapture, false);
+  assert.match(prompts.at(-1)[1], /CURRENT-R2-CACHE-HIT/);
+  assert.doesNotMatch(prompts.at(-1)[1], /RESULT-r1|Source/);
 });
 
 test('refreshActiveCharacterWorldInfo lazily loads the active character named world', async () => {
@@ -811,6 +901,7 @@ test('world-info filter debug bounds invalid UID samples without logging content
 });
 
 test('changing only the world-info rule version causes a cache miss', async () => {
+  const prompts = [];
   const eventSource = createEventSource();
   const cacheStore = createMapCacheStore();
   let version = 1;
@@ -836,7 +927,7 @@ test('changing only the world-info rule version causes a cache miss', async () =
         }
       };
     },
-    setExtensionPrompt() {}
+    setExtensionPrompt: (...args) => prompts.push(args)
   };
   const options = {
     autoMount: false,
@@ -850,6 +941,8 @@ test('changing only the world-info rule version causes a cache miss', async () =
     ['Lore.1', { uid: 1, content: 'Same source', disable: false }]
   ]));
   const first = await firstApp.dispatchCapturedWorldInfo();
+  const versionOneEntry = (await cacheStore.list()).find((entry) => entry.worldInfoRuleVersion === 1);
+  await cacheStore.put({ ...versionOneEntry, processedText: 'VERSION-ONE-RESULT' });
   firstApp.destroy();
 
   version = 2;
@@ -858,6 +951,20 @@ test('changing only the world-info rule version causes a cache miss', async () =
     ['Lore.1', { uid: 1, content: 'Same source', disable: false }]
   ]));
   const second = await secondApp.dispatchCapturedWorldInfo();
+  const versionTwoEntry = (await cacheStore.list()).find((entry) => entry.worldInfoRuleVersion === 2);
+  await cacheStore.put({ ...versionTwoEntry, processedText: 'VERSION-TWO-RESULT' });
+
+  await secondApp.refreshPromptInjection();
+  assert.match(prompts.at(-1)[1], /VERSION-TWO-RESULT/);
+  assert.doesNotMatch(prompts.at(-1)[1], /VERSION-ONE-RESULT/);
+  assert.equal(secondApp.state.lastInjection.count, 1);
+
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, content: 'Same source', disable: false }]
+  ]));
+  assert.match(prompts.at(-1)[1], /VERSION-TWO-RESULT/);
+  assert.doesNotMatch(prompts.at(-1)[1], /VERSION-ONE-RESULT/);
+  assert.equal(secondApp.state.lastInjection.count, 1);
 
   assert.equal(first.enqueued, 1);
   assert.equal(second.cacheHits, 0);
@@ -947,6 +1054,23 @@ test('current world-info rule alone owns prompt injection and coverage after dis
   assert.equal(prompts.at(-1)[1], '');
   assert.equal(app.state.lastInjection.count, 0);
   assert.equal(app.state.lastInjection.matchedSources, 0);
+
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, content: '甲'.repeat(600), disable: false }],
+    ['Lore.2', { uid: 2, content: '乙'.repeat(600), disable: false }]
+  ]));
+  assert.equal(prompts.at(-1)[1], '');
+  assert.equal(app.state.lastInjection.count, 0);
+
+  await app.refreshPromptInjection();
+  assert.equal(prompts.at(-1)[1], '');
+  assert.equal(app.state.lastInjection.count, 0);
+
+  await app.dispatchManualSource({ content: 'MANUAL-CURRENT-CONTEXT' });
+  const manualPrompt = prompts.at(-1)[1];
+  assert.match(manualPrompt, /RESULT-world-info-all-v1-manual-/);
+  assert.doesNotMatch(manualPrompt, /RESULT-r1|RESULT-r2/);
+  assert.equal(app.state.lastInjection.count, 1);
 });
 
 test('dispatchCapturedWorldInfo batches by token limit and reuses completed cache', async () => {
@@ -1066,7 +1190,7 @@ test('an older character catalog read cannot continue dispatch after a newer rea
   const worldInfoRepository = {
     async readActive() {
       readCount += 1;
-      if (readCount === 1) return oldRead.promise;
+      if (readCount === 2) return oldRead.promise;
       return createWorldInfoCatalog('Lore', { characterRef: 'character:new.png' });
     }
   };
@@ -1130,12 +1254,139 @@ test('same-scope character world mismatch fails closed without dispatch', async 
   assert.equal(app.state.tasks.length, 0);
 });
 
-test('destroy during a character catalog read prevents state render and worker side effects', async () => {
+test('capture identity rejects a same-name embedded book from another character', async () => {
+  const eventSource = createEventSource();
+  let catalog = createWorldInfoCatalog('Shared Book', {
+    characterRef: 'character:old.png',
+    worldRef: 'embedded:character:old.png',
+    entries: [{ uid: '1' }]
+  });
+  const context = {
+    chatId: 'chat-same-name-character-switch',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt() {}
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    worldInfoRepository: { readActive: async () => structuredClone(catalog) },
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Shared Book.1', { uid: 1, content: 'OLD-CHARACTER-PRIVATE-BODY', disable: false }]
+  ]));
+  assert.equal(app.state.worldInfoCapture.characterRef, 'character:old.png');
+  assert.equal(app.state.worldInfoCapture.worldRef, 'embedded:character:old.png');
+
+  catalog = createWorldInfoCatalog('Shared Book', {
+    characterRef: 'character:new.png',
+    worldRef: 'embedded:character:new.png',
+    entries: [{ uid: '1' }]
+  });
+  const result = await app.dispatchCapturedWorldInfo();
+
+  assert.equal(result.staleCapture, true);
+  assert.equal(result.enqueued, 0);
+  assert.equal(app.state.tasks.length, 0);
+  assert.doesNotMatch(JSON.stringify(app.state.tasks), /OLD-CHARACTER-PRIVATE-BODY/);
+});
+
+test('failed catalog binding leaves capture identity empty and dispatches fail closed', async () => {
+  const eventSource = createEventSource();
+  let readCount = 0;
+  const worldInfoRepository = {
+    async readActive() {
+      readCount += 1;
+      if (readCount === 1) throw new Error('capture catalog unavailable');
+      return createWorldInfoCatalog('Lore', {
+        characterRef: 'character:current.png',
+        worldRef: 'embedded:character:current.png',
+        entries: [{ uid: '1' }]
+      });
+    }
+  };
+  const context = {
+    chatId: 'chat-capture-catalog-failure',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt() {}
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    worldInfoRepository,
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, content: 'UNBOUND-CAPTURE-BODY', disable: false }]
+  ]));
+
+  assert.equal(app.state.worldInfoCapture.characterRef, '');
+  assert.equal(app.state.worldInfoCapture.worldRef, '');
+  const result = await app.dispatchCapturedWorldInfo();
+
+  assert.equal(readCount, 2);
+  assert.equal(result.staleCapture, true);
+  assert.equal(result.enqueued, 0);
+  assert.equal(app.state.tasks.length, 0);
+});
+
+test('older catalog binding cannot overwrite a newer world-info scan', async () => {
+  const eventSource = createEventSource();
+  const oldRead = createDeferred();
+  let readCount = 0;
+  const worldInfoRepository = {
+    async readActive() {
+      readCount += 1;
+      if (readCount === 1) return oldRead.promise;
+      return createWorldInfoCatalog('Lore', {
+        characterRef: 'character:new.png',
+        worldRef: 'embedded:character:new.png'
+      });
+    }
+  };
+  const context = {
+    chatId: 'chat-capture-binding-race',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt() {}
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    worldInfoRepository,
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  const oldScanPromise = eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, content: 'Old scan', disable: false }]
+  ]));
+  await waitForMicrotasks();
+  const newScanPromise = eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.2', { uid: 2, content: 'New scan', disable: false }]
+  ]));
+  await newScanPromise;
+  oldRead.resolve(createWorldInfoCatalog('Lore', {
+    characterRef: 'character:old.png',
+    worldRef: 'embedded:character:old.png'
+  }));
+  await oldScanPromise;
+
+  assert.equal(readCount, 2);
+  assert.equal(app.state.worldInfoCapture.entries[0].uid, 2);
+  assert.equal(app.state.worldInfoCapture.characterRef, 'character:new.png');
+  assert.equal(app.state.worldInfoCapture.worldRef, 'embedded:character:new.png');
+});
+
+test('destroy during scan catalog binding prevents capture and render writes', async () => {
   const eventSource = createEventSource();
   const pendingRead = createDeferred();
   const root = createPanelRoot();
   const context = {
-    chatId: 'chat-destroy-catalog-read',
+    chatId: 'chat-destroy-capture-binding',
     eventSource,
     eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
     extensionSettings: {},
@@ -1148,9 +1399,50 @@ test('destroy during a character catalog read prevents state render and worker s
     getContext: () => context,
     extensionPromptTypes: { IN_PROMPT: 7 }
   });
+  const scanPromise = eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, content: 'Late scan', disable: false }]
+  ]));
+  await waitForMicrotasks();
+  app.destroy();
+  const renderCountAfterDestroy = root.renderCount;
+  pendingRead.resolve(createWorldInfoCatalog('Lore', {
+    characterRef: 'character:late.png',
+    worldRef: 'embedded:character:late.png'
+  }));
+  await scanPromise;
+
+  assert.equal(app.state.worldInfoCapture.capturedAt, null);
+  assert.equal(root.renderCount, renderCountAfterDestroy);
+});
+
+test('destroy during a character catalog read prevents state render and worker side effects', async () => {
+  const eventSource = createEventSource();
+  const pendingRead = createDeferred();
+  let readCount = 0;
+  const root = createPanelRoot();
+  const context = {
+    chatId: 'chat-destroy-catalog-read',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt() {}
+  };
+  const app = await startTtAgentPlus727(createWindowRef({
+    document: createAutoMountDocument(root)
+  }), {
+    worldInfoRepository: {
+      async readActive() {
+        readCount += 1;
+        return readCount === 1 ? createWorldInfoCatalog('Lore') : pendingRead.promise;
+      }
+    },
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
   await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
     ['Lore.1', { uid: 1, content: 'Must not run', disable: false }]
   ]));
+  const catalogBeforeDispatch = app.state.worldInfoCatalog;
 
   const dispatchPromise = app.dispatchCapturedWorldInfo();
   await waitForMicrotasks();
@@ -1162,7 +1454,7 @@ test('destroy during a character catalog read prevents state render and worker s
   assert.equal(result.staleCapture, true);
   assert.equal(result.enqueued, 0);
   assert.equal(app.state.tasks.length, 0);
-  assert.equal(app.state.worldInfoCatalog.characterRef, '');
+  assert.deepEqual(app.state.worldInfoCatalog, catalogBeforeDispatch);
   assert.equal(root.renderCount, renderCountAfterDestroy);
 });
 
@@ -1707,6 +1999,7 @@ test('destroyed instance cannot overwrite the newer instance prompt', async () =
   const oldApp = await startTtAgentPlus727(windowRef, {
     autoMount: false,
     cacheStore: oldCacheStore,
+    worldInfoRepository: createCatalogRepository('Lore'),
     getContext: () => context,
     extensionPromptTypes: { IN_PROMPT: 7 }
   });
@@ -1725,6 +2018,7 @@ test('destroyed instance cannot overwrite the newer instance prompt', async () =
         })];
       }
     },
+    worldInfoRepository: createCatalogRepository('Lore'),
     getContext: () => context,
     extensionPromptTypes: { IN_PROMPT: 7 }
   });

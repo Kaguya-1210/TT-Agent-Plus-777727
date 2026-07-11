@@ -25,6 +25,11 @@ export const OUTPUT_MODES = Object.freeze({
   STREAM_PANEL: 'stream_panel'
 });
 
+export const WORLD_INFO_FILTER_MODES = Object.freeze({
+  INCLUDE: 'include',
+  EXCLUDE: 'exclude'
+});
+
 export const PANEL_TABS = Object.freeze([
   { id: 'overview', label: '总览' },
   { id: 'tasks', label: '任务' },

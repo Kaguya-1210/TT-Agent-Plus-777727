@@ -574,6 +574,120 @@ test('refreshActiveCharacterWorldInfo lazily loads the active character named wo
   assert.deepEqual(catalog.entries.map((entry) => entry.uid), ['1']);
 });
 
+test('world-info rule CRUD persists normalized immutable settings and migrates deleted references', async () => {
+  let saveCalls = 0;
+  const context = {
+    extensionSettings: {
+      [SETTINGS_KEY]: {
+        worldInfoRules: [{
+          id: 'linked-rule',
+          name: '旧规则',
+          mode: 'include',
+          worldRef: 'named:Lore',
+          entryUids: ['1'],
+          version: 4
+        }],
+        rules: [{
+          id: 'airp-character-default',
+          name: '角色加工',
+          worldInfoRuleId: 'linked-rule'
+        }]
+      }
+    },
+    saveSettingsDebounced() {
+      saveCalls += 1;
+    }
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => context,
+    worldInfoRepository: createCatalogRepository('Lore', {
+      entries: [
+        { uid: '1', displayName: '角色一', content: 'A' },
+        { uid: '2', displayName: '角色二', content: 'B' }
+      ]
+    })
+  });
+  await app.refreshActiveCharacterWorldInfo();
+  const settingsBefore = app.state.settings;
+
+  assert.equal(app.newWorldInfoRule(), true);
+  const createdId = app.state.worldInfoRuleEditor.draft.id;
+  assert.match(createdId, /^world-info-rule-/);
+  assert.equal(app.state.worldInfoRuleEditor.draft.worldRef, 'named:Lore');
+  app.updateWorldInfoRuleDraft({ name: '  只读角色  ', mode: 'include' });
+  app.toggleWorldInfoEntry('2', true);
+  const created = app.saveWorldInfoRule();
+
+  assert.notEqual(app.state.settings, settingsBefore);
+  assert.equal(created.id, createdId);
+  assert.equal(created.name, '只读角色');
+  assert.equal(created.version, 1);
+  assert.deepEqual(created.entryUids, ['2']);
+  assert.equal(app.state.worldInfoRuleEditor.view, 'list');
+  assert.equal(context.extensionSettings[SETTINGS_KEY].worldInfoRules.some((rule) => rule.id === createdId), true);
+
+  assert.equal(app.editWorldInfoRule(createdId), true);
+  app.updateWorldInfoRuleDraft({ name: '第二版' });
+  const updated = app.saveWorldInfoRule();
+  assert.equal(updated.id, createdId);
+  assert.equal(updated.version, 2);
+  assert.equal(updated.name, '第二版');
+
+  const savesBeforeCancel = saveCalls;
+  app.editWorldInfoRule(createdId);
+  app.updateWorldInfoRuleDraft({ name: '不应保存' });
+  assert.equal(app.cancelWorldInfoRule(), true);
+  assert.equal(saveCalls, savesBeforeCancel);
+  assert.equal(app.state.settings.worldInfoRules.find((rule) => rule.id === createdId).name, '第二版');
+
+  assert.equal(app.deleteWorldInfoRule('world-info-all'), false);
+  assert.equal(app.deleteWorldInfoRule('linked-rule'), true);
+  assert.equal(app.state.settings.worldInfoRules.some((rule) => rule.id === 'linked-rule'), false);
+  assert.ok(app.state.settings.rules.every((rule) => rule.worldInfoRuleId !== 'linked-rule'));
+  assert.equal(
+    app.state.settings.rules.find((rule) => rule.id === 'airp-character-default').worldInfoRuleId,
+    'world-info-all'
+  );
+  assert.deepEqual(context.extensionSettings[SETTINGS_KEY], app.state.settings);
+  assert.ok(saveCalls >= 3);
+});
+
+test('world-info search selection actions affect only current results', async () => {
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => ({ extensionSettings: {} }),
+    worldInfoRepository: createCatalogRepository('Lore', {
+      entries: [
+        { uid: '1', displayName: '角色公开', content: 'A' },
+        { uid: '2', displayName: '秘密', content: '角色本人可见' },
+        { uid: '3', displayName: '场景', content: '广场' }
+      ]
+    })
+  });
+  await app.refreshActiveCharacterWorldInfo();
+  app.newWorldInfoRule();
+  app.toggleWorldInfoEntry('3', true);
+  app.setWorldInfoSearch('角色');
+
+  assert.equal(app.selectAllWorldInfoEntries(), true);
+  assert.deepEqual(app.state.worldInfoRuleEditor.draft.entryUids, ['3', '1', '2']);
+  assert.equal(app.invertWorldInfoEntries(), true);
+  assert.deepEqual(app.state.worldInfoRuleEditor.draft.entryUids, ['3']);
+});
+
+test('new world-info rules are unavailable without an active character book', async () => {
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => ({ extensionSettings: {} }),
+    worldInfoRepository: createCatalogRepository('')
+  });
+  await app.refreshActiveCharacterWorldInfo();
+
+  assert.equal(app.newWorldInfoRule(), false);
+  assert.equal(app.state.worldInfoRuleEditor.view, 'list');
+});
+
 test('dispatchCapturedWorldInfo filters the active character main book before batching', async () => {
   const eventSource = createEventSource();
   const context = {
@@ -2155,6 +2269,76 @@ test('openPanel tolerates mounted render errors', async () => {
   assert.equal(app.state.panel.open, true);
   assert.equal(app.state.panel.activeTab, 'debug');
   assert.ok(app.debug.entries().some((entry) => entry.level === 'warn' && entry.channel === 'ui'));
+});
+
+test('openPanel rules renders immediately and refreshes the world-info catalog asynchronously', async () => {
+  const pendingRead = createDeferred();
+  const root = createPanelRoot();
+  const app = await startTtAgentPlus727(createWindowRef({ document: createAutoMountDocument(root) }), {
+    getContext: () => ({ extensionSettings: {} }),
+    worldInfoRepository: { readActive: () => pendingRead.promise }
+  });
+  const rendersBeforeOpen = root.renderCount;
+
+  const result = app.openPanel('rules');
+
+  assert.equal(result, undefined);
+  assert.equal(app.state.panel.open, true);
+  assert.equal(app.state.panel.activeTab, 'rules');
+  assert.equal(app.state.worldInfoCatalogStatus.loading, true);
+  assert.equal(root.renderCount, rendersBeforeOpen + 1);
+  assert.match(root.innerHTML, /data-rule-view/);
+
+  pendingRead.resolve(createWorldInfoCatalog('Lore', {
+    entries: [{ uid: '1', displayName: '角色', content: 'A' }]
+  }));
+  await waitForMicrotasks();
+
+  assert.equal(app.state.worldInfoCatalog.worldName, 'Lore');
+  assert.equal(app.state.worldInfoCatalogStatus.loading, false);
+  assert.ok(root.renderCount > rendersBeforeOpen + 1);
+});
+
+test('switching an open panel to rules also refreshes the world-info catalog', async () => {
+  let reads = 0;
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => ({ extensionSettings: {} }),
+    worldInfoRepository: {
+      async readActive() {
+        reads += 1;
+        return createWorldInfoCatalog('Lore');
+      }
+    }
+  });
+
+  app.openPanel('overview');
+  app.setTab('rules');
+  assert.equal(app.state.worldInfoCatalogStatus.loading, true);
+  await waitForMicrotasks();
+
+  assert.equal(reads, 1);
+  assert.equal(app.state.worldInfoCatalog.worldName, 'Lore');
+  assert.equal(app.state.worldInfoCatalogStatus.loading, false);
+});
+
+test('openPanel rules exposes a readable catalog refresh error state', async () => {
+  const root = createPanelRoot();
+  const app = await startTtAgentPlus727(createWindowRef({ document: createAutoMountDocument(root) }), {
+    getContext: () => ({ extensionSettings: {} }),
+    worldInfoRepository: {
+      async readActive() {
+        throw new Error('network unavailable');
+      }
+    }
+  });
+
+  app.openPanel('rules');
+  await waitForMicrotasks();
+
+  assert.equal(app.state.worldInfoCatalogStatus.loading, false);
+  assert.match(app.state.worldInfoCatalogStatus.error, /读取当前角色世界书失败/);
+  assert.match(root.innerHTML, /读取当前角色世界书失败/);
 });
 
 test('refreshPromptInjection clears prompt when cache list fails', async () => {

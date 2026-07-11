@@ -112,6 +112,148 @@ test('stylesheet defaults to host-friendly dark and exposes light overrides', ()
   assert.match(css, /\.ttap-primary-button/);
 });
 
+test('rules tab renders a state-driven secondary segmented view', () => {
+  const aiState = createInitialState({
+    panel: { open: true, activeTab: 'rules' },
+    ruleView: 'ai'
+  });
+  const worldInfoState = createInitialState({
+    panel: { open: true, activeTab: 'rules' },
+    ruleView: 'world-info',
+    worldInfoCatalog: {
+      characterRef: 'character:hero.png',
+      characterName: 'Hero',
+      worldRef: 'named:Lore',
+      worldName: 'Lore',
+      entries: [{ uid: '1', displayName: '角色', content: '勇者' }]
+    },
+    settings: {
+      worldInfoRules: [{
+        id: 'only-hero',
+        name: '只读角色',
+        mode: 'include',
+        worldRef: 'named:Lore',
+        entryUids: ['1'],
+        version: 2
+      }]
+    }
+  });
+
+  const aiHtml = renderPanelHtml(aiState);
+  const worldInfoHtml = renderPanelHtml(worldInfoState);
+
+  assert.match(aiHtml, /data-rule-view="ai"[^>]*aria-selected="true"/);
+  assert.match(aiHtml, /data-rule-view="world-info"/);
+  assert.match(aiHtml, /子 AI 预设/);
+  assert.doesNotMatch(aiHtml, /data-new-world-info-rule/);
+  assert.match(worldInfoHtml, /data-rule-view="world-info"[^>]*aria-selected="true"/);
+  assert.match(worldInfoHtml, /世界书处理规则/);
+  assert.match(worldInfoHtml, /只读角色/);
+  assert.match(worldInfoHtml, /包含/);
+  assert.match(worldInfoHtml, /已选 1/);
+  assert.match(worldInfoHtml, /Lore/);
+  assert.match(worldInfoHtml, /data-edit-world-info-rule="only-hero"/);
+  assert.match(worldInfoHtml, /data-delete-world-info-rule="only-hero"/);
+  assert.match(worldInfoHtml, /全部条目/);
+  assert.doesNotMatch(worldInfoHtml, /data-delete-world-info-rule="world-info-all"/);
+});
+
+test('world-info rules disable creation when the active character has no book', () => {
+  const state = createInitialState({
+    panel: { open: true, activeTab: 'rules' },
+    ruleView: 'world-info'
+  });
+  const html = renderPanelHtml(state);
+
+  assert.match(html, /当前角色未绑定世界书/);
+  assert.match(html, /data-new-world-info-rule[^>]*disabled/);
+});
+
+test('world-info editor renders searchable entries and include statistics safely', () => {
+  const unsafeRuleId = 'rule&quot;';
+  const state = createInitialState({
+    panel: { open: true, activeTab: 'rules' },
+    ruleView: 'world-info',
+    worldInfoCatalog: {
+      characterRef: 'character:hero.png',
+      characterName: 'Hero',
+      worldRef: 'named:Lore',
+      worldName: 'Lore',
+      entries: [
+        { uid: '1', displayName: '角色一', content: '公开正文' },
+        { uid: '2\" data-unsafe=\"yes', displayName: '<角色二>', content: '<script>正文</script>' },
+        { uid: '3', displayName: '场景', content: '广场' }
+      ]
+    },
+    worldInfoRuleEditor: {
+      view: 'edit',
+      editingId: unsafeRuleId,
+      search: '角色',
+      draft: {
+        id: unsafeRuleId,
+        name: '<img src=x onerror=alert(1)>',
+        mode: 'include',
+        worldRef: 'named:Lore',
+        entryUids: ['1', '3'],
+        version: 1,
+        builtin: false
+      }
+    }
+  });
+  const html = renderPanelHtml(state);
+
+  assert.match(html, /ttap-world-info-editor/);
+  assert.match(html, /data-world-info-search/);
+  assert.match(html, /data-world-info-select-all/);
+  assert.match(html, /data-world-info-invert/);
+  assert.match(html, /data-world-info-entry="1"[^>]*checked/);
+  assert.match(html, /data-save-world-info-rule/);
+  assert.match(html, /data-cancel-world-info-rule/);
+  assert.match(html, /当前结果已选 1/);
+  assert.match(html, /全局已选 2/);
+  assert.match(html, /最终允许读取 2/);
+  assert.doesNotMatch(html, /<img src=x/);
+  assert.doesNotMatch(html, /<script>/);
+  assert.doesNotMatch(html, /data-unsafe="yes"/);
+  assert.match(html, /&lt;角色二&gt;/);
+});
+
+test('world-info editor reports exclude final allowance from the whole catalog', () => {
+  const state = createInitialState({
+    panel: { open: true, activeTab: 'rules' },
+    ruleView: 'world-info',
+    worldInfoCatalog: {
+      worldRef: 'named:Lore',
+      worldName: 'Lore',
+      entries: [
+        { uid: '1', displayName: '一', content: 'A' },
+        { uid: '2', displayName: '二', content: 'B' },
+        { uid: '3', displayName: '三', content: 'C' }
+      ]
+    },
+    worldInfoRuleEditor: {
+      view: 'edit',
+      editingId: 'exclude-one',
+      search: '',
+      draft: { id: 'exclude-one', name: '排除一', mode: 'exclude', entryUids: ['1'], version: 1 }
+    }
+  });
+
+  assert.match(renderPanelHtml(state), /最终允许读取 2/);
+});
+
+test('world-info rule styles provide stable scrolling rows and a narrow single-column editor', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+
+  assert.match(css, /\.ttap-segmented\s*{/);
+  assert.match(css, /\.ttap-world-info-editor\s*{/);
+  assert.match(css, /\.ttap-entry-toolbar\s*{/);
+  assert.match(css, /\.ttap-entry-list\s*{[\s\S]*overflow-y:\s*auto/);
+  assert.match(css, /\.ttap-entry-row\s*{[\s\S]*min-height:/);
+  assert.match(css, /@media\s*\(max-width:\s*520px\)[\s\S]*\.ttap-world-info-editor[\s\S]*grid-template-columns:\s*1fr/);
+  assert.match(css, /@media\s*\(max-width:\s*520px\)[\s\S]*\.ttap-entry-toolbar[\s\S]*grid-template-columns:\s*1fr/);
+});
+
 
 
 test('panel opens as a centered modal instead of a right edge drawer', () => {
@@ -373,5 +515,108 @@ test('mountPanel still binds normal handlers', () => {
       ruleTemplateId: 'airp-character-default'
     }],
     ['captured', { ruleTemplateId: 'airp-scene-default' }]
+  ]);
+});
+
+test('mountPanel binds world-info rule controls once per event', () => {
+  const makeNode = (dataset = {}, value = '') => ({
+    dataset,
+    value,
+    checked: false,
+    listeners: new Map(),
+    addEventListener(event, listener) {
+      const listeners = this.listeners.get(event) ?? [];
+      listeners.push(listener);
+      this.listeners.set(event, listeners);
+    },
+    emit(event) {
+      for (const listener of this.listeners.get(event) ?? []) listener({ currentTarget: this, target: this });
+    }
+  });
+  const nodes = {
+    view: makeNode({ ruleView: 'world-info' }),
+    create: makeNode(),
+    edit: makeNode({ editWorldInfoRule: 'rule-1' }),
+    remove: makeNode({ deleteWorldInfoRule: 'rule-1' }),
+    search: makeNode({}, '角色'),
+    selectAll: makeNode(),
+    invert: makeNode(),
+    entry: makeNode({ worldInfoEntry: '7' }),
+    save: makeNode(),
+    cancel: makeNode(),
+    name: makeNode({}, '新名称'),
+    mode: makeNode({}, 'include')
+  };
+  nodes.entry.checked = true;
+  const selectors = new Map([
+    ['[data-rule-view]', [nodes.view]],
+    ['[data-new-world-info-rule]', [nodes.create]],
+    ['[data-edit-world-info-rule]', [nodes.edit]],
+    ['[data-delete-world-info-rule]', [nodes.remove]],
+    ['[data-world-info-select-all]', [nodes.selectAll]],
+    ['[data-world-info-invert]', [nodes.invert]],
+    ['[data-world-info-entry]', [nodes.entry]],
+    ['[data-save-world-info-rule]', [nodes.save]],
+    ['[data-cancel-world-info-rule]', [nodes.cancel]],
+    ['[data-world-info-search]', [nodes.search]],
+    ['[data-world-info-rule-name]', [nodes.name]],
+    ['[data-world-info-rule-mode]', [nodes.mode]]
+  ]);
+  const root = {
+    innerHTML: '',
+    querySelectorAll: (selector) => selectors.get(selector) ?? [],
+    querySelector: () => null
+  };
+  const calls = [];
+
+  const mounted = mountPanel({
+    documentRef: { getElementById: () => root },
+    getState: () => createInitialState({ panel: { open: true, activeTab: 'rules' } }),
+    onRuleView: (value) => calls.push(['view', value]),
+    onNewWorldInfoRule: () => calls.push(['new']),
+    onEditWorldInfoRule: (id) => calls.push(['edit', id]),
+    onDeleteWorldInfoRule: (id) => calls.push(['delete', id]),
+    onWorldInfoSearch: (value) => calls.push(['search', value]),
+    onWorldInfoSelectAll: () => calls.push(['select-all']),
+    onWorldInfoInvert: () => calls.push(['invert']),
+    onWorldInfoEntry: (uid, checked) => calls.push(['entry', uid, checked]),
+    onWorldInfoRuleDraft: (patch) => calls.push(['draft', patch]),
+    onSaveWorldInfoRule: () => calls.push(['save']),
+    onCancelWorldInfoRule: () => calls.push(['cancel'])
+  });
+
+  for (const key of ['view', 'create', 'edit', 'remove', 'selectAll', 'invert', 'save', 'cancel']) {
+    nodes[key].emit('click');
+  }
+  nodes.search.emit('input');
+  nodes.entry.emit('change');
+  nodes.name.emit('input');
+  nodes.mode.emit('change');
+  nodes.search.emit('change');
+  nodes.entry.emit('click');
+
+  assert.deepEqual(calls, [
+    ['view', 'world-info'],
+    ['new'],
+    ['edit', 'rule-1'],
+    ['delete', 'rule-1'],
+    ['select-all'],
+    ['invert'],
+    ['save'],
+    ['cancel'],
+    ['search', '角色'],
+    ['entry', '7', true],
+    ['draft', { name: '新名称' }],
+    ['draft', { mode: 'include' }]
+  ]);
+
+  calls.length = 0;
+  mounted.render();
+  nodes.search.emit('input');
+  nodes.entry.emit('change');
+
+  assert.deepEqual(calls, [
+    ['search', '角色'],
+    ['entry', '7', true]
   ]);
 });

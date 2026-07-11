@@ -38,6 +38,11 @@ import {
   normalizeWorldInfoRule,
   summarizeWorldInfoFilter
 } from './worldInfoRules.js';
+import {
+  filterCatalogEntries,
+  invertVisibleSelection,
+  selectVisibleEntries
+} from './worldInfoRuleEditor.js';
 
 const slashRegisteredParsers = new WeakSet();
 const slashParserOpeners = new WeakMap();
@@ -164,6 +169,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
   let worldInfoRefreshSequence = 0;
   let promptRefreshSequence = 0;
   let worldInfoPromptContextSequence = 0;
+  let worldInfoRuleCounter = 0;
   let destroyed = false;
   const initialWorldInfoRule = normalizeWorldInfoRule(
     state.settings.worldInfoRules.find((rule) => rule?.id === BUILTIN_ALL_WORLD_INFO_RULE_ID)
@@ -204,7 +210,9 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
 
   function openPanel(tab = state.panel.activeTab) {
     state = updatePanel(state, { open: true, activeTab: tab });
+    const refreshWorldInfo = prepareRulesCatalogRefresh(tab);
     render();
+    if (refreshWorldInfo) void refreshActiveCharacterWorldInfo();
   }
 
   function closePanel() {
@@ -214,7 +222,216 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
 
   function setTab(tab) {
     state = updatePanel(state, { activeTab: tab });
+    const refreshWorldInfo = prepareRulesCatalogRefresh(tab);
     render();
+    if (refreshWorldInfo) void refreshActiveCharacterWorldInfo();
+  }
+
+  function prepareRulesCatalogRefresh(tab) {
+    if (tab !== 'rules') return false;
+    state = {
+      ...state,
+      worldInfoCatalogStatus: { loading: true, error: '' }
+    };
+    return true;
+  }
+
+  function setRuleView(view) {
+    const nextView = view === 'world-info' ? 'world-info' : 'ai';
+    state = { ...state, ruleView: nextView };
+    render();
+    return nextView;
+  }
+
+  function newWorldInfoRule() {
+    const worldRef = safeString(state.worldInfoCatalog?.worldRef);
+    if (!worldRef) return false;
+    const id = createWorldInfoRuleId();
+    state = {
+      ...state,
+      ruleView: 'world-info',
+      worldInfoRuleEditor: {
+        view: 'edit',
+        editingId: id,
+        search: '',
+        draft: {
+          id,
+          name: '新世界书规则',
+          mode: 'exclude',
+          worldRef,
+          entryUids: [],
+          version: 0,
+          builtin: false
+        }
+      }
+    };
+    render();
+    return true;
+  }
+
+  function editWorldInfoRule(ruleId) {
+    const id = safeString(ruleId);
+    const rule = state.settings.worldInfoRules.find((item) => item?.id === id);
+    if (!rule) return false;
+    state = {
+      ...state,
+      ruleView: 'world-info',
+      worldInfoRuleEditor: {
+        view: 'edit',
+        editingId: id,
+        search: '',
+        draft: cloneValue(rule)
+      }
+    };
+    render();
+    return true;
+  }
+
+  function updateWorldInfoRuleDraft(patch = {}) {
+    const editor = state.worldInfoRuleEditor;
+    if (editor?.view !== 'edit' || !editor.draft || !patch || typeof patch !== 'object') return false;
+    const nextPatch = {};
+    if (Object.hasOwn(patch, 'name')) nextPatch.name = typeof patch.name === 'string' ? patch.name : '';
+    if (Object.hasOwn(patch, 'mode')) nextPatch.mode = patch.mode === 'include' ? 'include' : 'exclude';
+    state = {
+      ...state,
+      worldInfoRuleEditor: {
+        ...editor,
+        draft: { ...editor.draft, ...nextPatch }
+      }
+    };
+    render();
+    return true;
+  }
+
+  function setWorldInfoSearch(query) {
+    const editor = state.worldInfoRuleEditor;
+    if (editor?.view !== 'edit') return false;
+    state = {
+      ...state,
+      worldInfoRuleEditor: {
+        ...editor,
+        search: typeof query === 'string' ? query : ''
+      }
+    };
+    render();
+    return true;
+  }
+
+  function selectAllWorldInfoEntries() {
+    return updateVisibleWorldInfoSelection(selectVisibleEntries);
+  }
+
+  function invertWorldInfoEntries() {
+    return updateVisibleWorldInfoSelection(invertVisibleSelection);
+  }
+
+  function updateVisibleWorldInfoSelection(selectionAction) {
+    const editor = state.worldInfoRuleEditor;
+    if (editor?.view !== 'edit' || !editor.draft) return false;
+    const visible = filterCatalogEntries(state.worldInfoCatalog?.entries, editor.search);
+    const entryUids = selectionAction(editor.draft.entryUids, visible);
+    state = {
+      ...state,
+      worldInfoRuleEditor: {
+        ...editor,
+        draft: { ...editor.draft, entryUids }
+      }
+    };
+    render();
+    return true;
+  }
+
+  function toggleWorldInfoEntry(uid, checked) {
+    const editor = state.worldInfoRuleEditor;
+    const normalizedUid = safeUid(uid);
+    if (editor?.view !== 'edit' || !editor.draft || !normalizedUid) return false;
+    const selected = new Set((Array.isArray(editor.draft.entryUids) ? editor.draft.entryUids : [])
+      .map(safeUid)
+      .filter(Boolean));
+    if (checked === true) selected.add(normalizedUid);
+    else selected.delete(normalizedUid);
+    state = {
+      ...state,
+      worldInfoRuleEditor: {
+        ...editor,
+        draft: { ...editor.draft, entryUids: [...selected] }
+      }
+    };
+    render();
+    return true;
+  }
+
+  function saveWorldInfoRule() {
+    const editor = state.worldInfoRuleEditor;
+    if (editor?.view !== 'edit' || !editor.draft) return null;
+    const ruleId = safeString(editor.editingId) || safeString(editor.draft.id);
+    if (!ruleId) return null;
+    const existingIndex = state.settings.worldInfoRules.findIndex((rule) => rule?.id === ruleId);
+    const existing = existingIndex >= 0 ? state.settings.worldInfoRules[existingIndex] : null;
+    const version = Math.min(999999, (Number.isInteger(existing?.version) ? existing.version : 0) + 1);
+    const normalized = normalizeWorldInfoRule({
+      ...editor.draft,
+      id: ruleId,
+      worldRef: existing?.builtin === true
+        ? existing.worldRef
+        : (safeString(editor.draft.worldRef) || safeString(state.worldInfoCatalog?.worldRef)),
+      version,
+      builtin: existing?.builtin === true
+    });
+    const worldInfoRules = state.settings.worldInfoRules.map((rule, index) => (
+      index === existingIndex ? normalized : rule
+    ));
+    if (existingIndex < 0) worldInfoRules.push(normalized);
+    const settings = bridge.saveSettings({ ...state.settings, worldInfoRules });
+    state = {
+      ...state,
+      settings,
+      worldInfoRuleEditor: emptyWorldInfoRuleEditor()
+    };
+    render();
+    return cloneValue(settings.worldInfoRules.find((rule) => rule.id === ruleId) ?? normalized);
+  }
+
+  function deleteWorldInfoRule(ruleId) {
+    const id = safeString(ruleId);
+    const target = state.settings.worldInfoRules.find((rule) => rule?.id === id);
+    if (!target || target.builtin === true || id === BUILTIN_ALL_WORLD_INFO_RULE_ID) return false;
+    const worldInfoRules = state.settings.worldInfoRules.filter((rule) => rule?.id !== id);
+    const rules = state.settings.rules.map((rule) => (
+      rule?.worldInfoRuleId === id
+        ? { ...rule, worldInfoRuleId: BUILTIN_ALL_WORLD_INFO_RULE_ID }
+        : rule
+    ));
+    const settings = bridge.saveSettings({ ...state.settings, worldInfoRules, rules });
+    state = {
+      ...state,
+      settings,
+      worldInfoRuleEditor: emptyWorldInfoRuleEditor()
+    };
+    render();
+    return true;
+  }
+
+  function cancelWorldInfoRule() {
+    if (state.worldInfoRuleEditor?.view !== 'edit') return false;
+    state = { ...state, worldInfoRuleEditor: emptyWorldInfoRuleEditor() };
+    render();
+    return true;
+  }
+
+  function createWorldInfoRuleId() {
+    const existingIds = new Set(state.settings.worldInfoRules.map((rule) => rule?.id));
+    let id;
+    do {
+      worldInfoRuleCounter += 1;
+      id = `world-info-rule-${Date.now().toString(36)}-${worldInfoRuleCounter.toString(36)}`;
+    } while (existingIds.has(id));
+    return id;
+  }
+
+  function emptyWorldInfoRuleEditor() {
+    return { view: 'list', editingId: null, search: '', draft: null };
   }
 
   async function refreshPromptInjection(options = {}) {
@@ -332,10 +549,12 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     const generation = ++worldInfoRefreshSequence;
     let catalog;
     let succeeded = true;
+    let readError = null;
     try {
       catalog = normalizeWorldInfoCatalog(await worldInfoRepository.readActive());
     } catch (error) {
       succeeded = false;
+      readError = error;
       safeDebug(debug, 'warn', 'world-info', '读取当前角色世界书目录失败', {
         error: safeErrorMessage(error)
       });
@@ -343,8 +562,15 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     }
 
     const current = !destroyed && generation === worldInfoRefreshSequence;
-    if (succeeded && current) {
-      state = { ...state, worldInfoCatalog: cloneValue(catalog) };
+    if (current) {
+      state = {
+        ...state,
+        ...(succeeded ? { worldInfoCatalog: cloneValue(catalog) } : {}),
+        worldInfoCatalogStatus: {
+          loading: false,
+          error: succeeded ? '' : `读取当前角色世界书失败：${safeErrorMessage(readError)}`
+        }
+      };
       render();
     }
     return { catalog: cloneValue(catalog), generation, current, succeeded };
@@ -838,6 +1064,17 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
             render();
           });
         },
+        onRuleView: setRuleView,
+        onNewWorldInfoRule: newWorldInfoRule,
+        onEditWorldInfoRule: editWorldInfoRule,
+        onDeleteWorldInfoRule: deleteWorldInfoRule,
+        onWorldInfoSearch: setWorldInfoSearch,
+        onWorldInfoSelectAll: selectAllWorldInfoEntries,
+        onWorldInfoInvert: invertWorldInfoEntries,
+        onWorldInfoEntry: toggleWorldInfoEntry,
+        onWorldInfoRuleDraft: updateWorldInfoRuleDraft,
+        onSaveWorldInfoRule: saveWorldInfoRule,
+        onCancelWorldInfoRule: cancelWorldInfoRule,
         onExportDebug: exportDebug,
         debug
       });
@@ -901,6 +1138,17 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     openPanel,
     closePanel,
     setTab,
+    setRuleView,
+    newWorldInfoRule,
+    editWorldInfoRule,
+    updateWorldInfoRuleDraft,
+    setWorldInfoSearch,
+    selectAllWorldInfoEntries,
+    invertWorldInfoEntries,
+    toggleWorldInfoEntry,
+    saveWorldInfoRule,
+    deleteWorldInfoRule,
+    cancelWorldInfoRule,
     dispatchManualSource,
     dispatchCapturedWorldInfo,
     refreshActiveCharacterWorldInfo,

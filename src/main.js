@@ -210,7 +210,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     try {
       entries = await cache.list();
     } catch (error) {
-      if (!canCommitPromptRefresh(refreshSequence, options.scanSequence)) return '';
+      if (!canCommitPromptRefresh(refreshSequence, options)) return '';
       const message = errorMessage(error);
       debug.error('prompt', 'cache list failed', { error: message });
       state = {
@@ -224,7 +224,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     }
 
     if (!state.settings.promptInjectionEnabled) {
-      if (!canCommitPromptRefresh(refreshSequence, options.scanSequence)) return '';
+      if (!canCommitPromptRefresh(refreshSequence, options)) return '';
       state = { ...state, cacheEntries: entries };
       setProcessedPrompt('');
       state = { ...state, lastInjection: { count: 0, length: 0 } };
@@ -241,7 +241,8 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     const scopeId = typeof options.scopeId === 'string' && options.scopeId
       ? options.scopeId
       : currentScopeId();
-    const selected = selectRelevantCacheEntries(entries, {
+    const ruleScopedEntries = filterCacheEntriesByWorldInfoRule(entries, options);
+    const selected = selectRelevantCacheEntries(ruleScopedEntries, {
       maxTokens: state.settings.promptBlockMaxTokens,
       ...(shouldFilterSources ? { activeSourceRefs } : {}),
       scopeId,
@@ -253,7 +254,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     const bypassed = state.settings.worldInfoBypassEnabled && options.eventData
       ? removeCoveredWorldInfoEntries(options.eventData, coveredSourceRefs)
       : 0;
-    if (!canCommitPromptRefresh(refreshSequence, options.scanSequence)) return block;
+    if (!canCommitPromptRefresh(refreshSequence, options)) return block;
     state = { ...state, cacheEntries: entries };
     setProcessedPrompt(block);
     state = {
@@ -281,7 +282,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
       const saved = await cache.put(entry);
       if (destroyed) return null;
       debug.info('cache', '处理结果已写入缓存', { taskId: task.id, key: saved.key, tokenEstimate: saved.tokenEstimate });
-      await refreshPromptInjection();
+      await refreshPromptInjection(taskWorldInfoRuleFilter(task));
       return saved;
     } catch (error) {
       debug.error('cache', '处理结果写入缓存失败', { taskId: task.id, error: errorMessage(error) });
@@ -296,22 +297,29 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
   }
 
   async function refreshActiveCharacterWorldInfo() {
-    const refreshSequence = ++worldInfoRefreshSequence;
+    return (await readActiveCharacterWorldInfo()).catalog;
+  }
+
+  async function readActiveCharacterWorldInfo() {
+    const generation = ++worldInfoRefreshSequence;
     let catalog;
+    let succeeded = true;
     try {
       catalog = normalizeWorldInfoCatalog(await worldInfoRepository.readActive());
     } catch (error) {
+      succeeded = false;
       safeDebug(debug, 'warn', 'world-info', '读取当前角色世界书目录失败', {
         error: safeErrorMessage(error)
       });
-      return emptyWorldInfoCatalog();
+      catalog = emptyWorldInfoCatalog();
     }
 
-    if (!destroyed && refreshSequence === worldInfoRefreshSequence) {
+    const current = !destroyed && generation === worldInfoRefreshSequence;
+    if (succeeded && current) {
       state = { ...state, worldInfoCatalog: cloneValue(catalog) };
       render();
     }
-    return cloneValue(catalog);
+    return { catalog: cloneValue(catalog), generation, current };
   }
 
   async function dispatchManualSource(input = {}) {
@@ -372,8 +380,12 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
       });
     }
 
-    const catalog = await refreshActiveCharacterWorldInfo();
-    if (!isCaptureCurrent(captureSequence, captureScopeId)) {
+    const catalogRead = await readActiveCharacterWorldInfo();
+    const catalog = catalogRead.catalog;
+    if (
+      !catalogRead.current
+      || !isWorldInfoDispatchCurrent(captureSequence, captureScopeId, catalogRead.generation)
+    ) {
       return emptyCapturedDispatchResult({
         ...summarizeWorldInfoFilter(capturedSources, []),
         worldInfoRuleId: worldInfoRule.id,
@@ -404,14 +416,27 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
       ruleId: worldInfoRule.id,
       mode: worldInfoRule.mode,
       ...filterSummary,
-      invalidUids: findInvalidWorldInfoRuleUids(worldInfoRule, catalog)
+      ...summarizeInvalidWorldInfoRuleUids(worldInfoRule, catalog)
     });
 
     if (!filteredSources.length) {
+      await refreshPromptInjection({
+        activeSourceRefs: [],
+        scopeId: captureScopeId,
+        scanSequence: captureSequence,
+        catalogGeneration: catalogRead.generation,
+        worldInfoRuleId: worldInfoRule.id,
+        worldInfoRuleVersion: worldInfoRule.version
+      });
       return emptyCapturedDispatchResult({
         ...filterSummary,
         worldInfoRuleId: worldInfoRule.id,
-        worldInfoRuleVersion: worldInfoRule.version
+        worldInfoRuleVersion: worldInfoRule.version,
+        staleCapture: !isWorldInfoDispatchCurrent(
+          captureSequence,
+          captureScopeId,
+          catalogRead.generation
+        )
       });
     }
 
@@ -428,7 +453,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     let staleCapture = false;
 
     for (const batch of batches) {
-      if (!isCaptureCurrent(captureSequence, captureScopeId)) {
+      if (!isWorldInfoDispatchCurrent(captureSequence, captureScopeId, catalogRead.generation)) {
         staleCapture = true;
         break;
       }
@@ -439,6 +464,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
         ruleVersion: ruleTemplate.version ?? 1,
         worldInfoRuleId: worldInfoRule.id,
         worldInfoRuleVersion: worldInfoRule.version,
+        worldInfoCatalogGeneration: catalogRead.generation,
         modelProfileId: ruleTemplate.modelProfileId ?? 'current',
         depth: 0,
         tokenEstimate: batch.tokenEstimate
@@ -446,7 +472,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
       const cacheDescriptor = createTaskCacheDescriptor(descriptor, state.settings);
       const cacheKey = createCacheKey(cacheDescriptor);
       const cached = await cache.get(cacheKey);
-      if (!isCaptureCurrent(captureSequence, captureScopeId)) {
+      if (!isWorldInfoDispatchCurrent(captureSequence, captureScopeId, catalogRead.generation)) {
         staleCapture = true;
         break;
       }
@@ -462,7 +488,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
           debug.warn('cache', '无效缓存记录移除失败', { key: cacheKey, error: errorMessage(error) });
         }
       }
-      if (!isCaptureCurrent(captureSequence, captureScopeId)) {
+      if (!isWorldInfoDispatchCurrent(captureSequence, captureScopeId, catalogRead.generation)) {
         staleCapture = true;
         break;
       }
@@ -495,12 +521,18 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     state = updatePanel(state, { open: true, activeTab: 'tasks' });
     render();
     if (taskIds.length) await pumpDispatcher();
-    if (isCaptureCurrent(captureSequence, captureScopeId)) {
+    if (isWorldInfoDispatchCurrent(captureSequence, captureScopeId, catalogRead.generation)) {
       await refreshPromptInjection({
         activeSourceRefs: filteredSources,
         scopeId: captureScopeId,
-        scanSequence: captureSequence
+        scanSequence: captureSequence,
+        catalogGeneration: catalogRead.generation,
+        worldInfoRuleId: worldInfoRule.id,
+        worldInfoRuleVersion: worldInfoRule.version
       });
+      if (!isWorldInfoDispatchCurrent(captureSequence, captureScopeId, catalogRead.generation)) {
+        staleCapture = true;
+      }
     } else {
       staleCapture = true;
     }
@@ -747,10 +779,13 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     return state.worldInfoCapture?.scopeId ?? 'global';
   }
 
-  function canCommitPromptRefresh(refreshSequence, scanSequence) {
+  function canCommitPromptRefresh(refreshSequence, options = {}) {
     const currentRefresh = refreshSequence === promptRefreshSequence;
-    const currentScan = !Number.isInteger(scanSequence) || scanSequence === worldInfoScanSequence;
-    return !destroyed && currentRefresh && currentScan;
+    const currentScan = !Number.isInteger(options.scanSequence)
+      || options.scanSequence === worldInfoScanSequence;
+    const currentCatalog = !Number.isInteger(options.catalogGeneration)
+      || options.catalogGeneration === worldInfoRefreshSequence;
+    return !destroyed && currentRefresh && currentScan && currentCatalog;
   }
 
   function isCaptureCurrent(captureSequence, scopeId) {
@@ -760,6 +795,11 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
       && state.worldInfoCapture?.scopeId === scopeId
       && currentScopeId() === scopeId
     );
+  }
+
+  function isWorldInfoDispatchCurrent(captureSequence, scopeId, catalogGeneration) {
+    return catalogGeneration === worldInfoRefreshSequence
+      && isCaptureCurrent(captureSequence, scopeId);
   }
 }
 
@@ -808,6 +848,32 @@ function normalizeManualSource(input, sequence) {
   };
 }
 
+function taskWorldInfoRuleFilter(task) {
+  const worldInfoRuleId = safeString(safeProperty(task, 'worldInfoRuleId'));
+  const worldInfoRuleVersion = safeProperty(task, 'worldInfoRuleVersion');
+  const catalogGeneration = safeProperty(task, 'worldInfoCatalogGeneration');
+  if (!worldInfoRuleId || !Number.isInteger(worldInfoRuleVersion)) return {};
+  return {
+    worldInfoRuleId,
+    worldInfoRuleVersion,
+    ...(Number.isInteger(catalogGeneration) ? { catalogGeneration } : {})
+  };
+}
+
+function filterCacheEntriesByWorldInfoRule(entries, options) {
+  if (!Array.isArray(entries)) return [];
+  const hasRuleId = safeHasOwn(options, 'worldInfoRuleId');
+  const hasRuleVersion = safeHasOwn(options, 'worldInfoRuleVersion');
+  if (!hasRuleId && !hasRuleVersion) return entries;
+
+  const ruleId = safeString(safeProperty(options, 'worldInfoRuleId'));
+  const ruleVersion = safeProperty(options, 'worldInfoRuleVersion');
+  return entries.filter((entry) => (
+    (!hasRuleId || safeProperty(entry, 'worldInfoRuleId') === ruleId)
+    && (!hasRuleVersion || safeProperty(entry, 'worldInfoRuleVersion') === ruleVersion)
+  ));
+}
+
 function emptyWorldInfoCatalog() {
   return {
     characterRef: '',
@@ -846,15 +912,21 @@ function normalizeWorldInfoCatalogEntry(input) {
   };
 }
 
-function findInvalidWorldInfoRuleUids(rule, catalog) {
+function summarizeInvalidWorldInfoRuleUids(rule, catalog) {
   const available = new Set(
     (Array.isArray(catalog?.entries) ? catalog.entries : [])
       .map((entry) => safeUid(safeProperty(entry, 'uid')))
       .filter(Boolean)
   );
-  return (Array.isArray(rule?.entryUids) ? rule.entryUids : [])
-    .map(safeUid)
-    .filter((uid) => uid && !available.has(uid));
+  let invalidUidCount = 0;
+  const invalidUidSample = [];
+  for (const value of Array.isArray(rule?.entryUids) ? rule.entryUids : []) {
+    const uid = safeUid(value);
+    if (!uid || available.has(uid)) continue;
+    invalidUidCount += 1;
+    if (invalidUidSample.length < 50) invalidUidSample.push(uid);
+  }
+  return { invalidUidCount, invalidUidSample };
 }
 
 function safeProperty(value, key) {

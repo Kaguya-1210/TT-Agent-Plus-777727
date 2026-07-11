@@ -555,7 +555,8 @@ test('dispatchCapturedWorldInfo filters the active character main book before ba
     captured: 3,
     passed: 2,
     excluded: 1,
-    invalidUids: []
+    invalidUidCount: 0,
+    invalidUidSample: []
   });
   assert.doesNotMatch(JSON.stringify(app.debug.entries()), /PRIVATE-CONTENT/);
 });
@@ -761,8 +762,52 @@ test('empty world-info filtering does not enqueue or run a worker and reports in
   assert.equal(result.enqueued, 0);
   assert.equal(app.state.tasks.length, 0);
   const diagnostic = app.debug.entries().find((entry) => entry.message === '世界书条目过滤');
-  assert.deepEqual(diagnostic.details.invalidUids, ['404']);
+  assert.equal(diagnostic.details.invalidUidCount, 1);
+  assert.deepEqual(diagnostic.details.invalidUidSample, ['404']);
+  assert.equal(Object.hasOwn(diagnostic.details, 'invalidUids'), false);
   assert.doesNotMatch(JSON.stringify(app.debug.entries()), /PRIVATE-EMPTY-FILTER/);
+});
+
+test('world-info filter debug bounds invalid UID samples without logging content', async () => {
+  const eventSource = createEventSource();
+  const entryUids = Array.from({ length: 120 }, (_, index) => String(1000 + index));
+  const context = {
+    chatId: 'chat-invalid-uid-sample',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {
+      [SETTINGS_KEY]: {
+        worldInfoRules: [{
+          id: 'many-invalid-uids',
+          name: 'Many invalid UIDs',
+          mode: 'include',
+          entryUids,
+          version: 1
+        }]
+      }
+    },
+    setExtensionPrompt() {}
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    worldInfoRepository: createCatalogRepository('Lore'),
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, content: 'PRIVATE-LARGE-UID-DIAGNOSTIC', disable: false }]
+  ]));
+
+  await app.dispatchCapturedWorldInfo({ worldInfoRuleId: 'many-invalid-uids' });
+
+  const diagnostic = app.debug.entries().find((entry) => (
+    entry.message === '世界书条目过滤' && entry.details.ruleId === 'many-invalid-uids'
+  ));
+  assert.equal(diagnostic.details.invalidUidCount, 120);
+  assert.equal(diagnostic.details.invalidUidSample.length, 50);
+  assert.deepEqual(diagnostic.details.invalidUidSample, entryUids.slice(0, 50));
+  assert.equal(Object.hasOwn(diagnostic.details, 'invalidUids'), false);
+  assert.doesNotMatch(JSON.stringify(app.debug.entries()), /PRIVATE-LARGE-UID-DIAGNOSTIC/);
 });
 
 test('changing only the world-info rule version causes a cache miss', async () => {
@@ -822,6 +867,86 @@ test('changing only the world-info rule version causes a cache miss', async () =
     (await cacheStore.list()).map((entry) => entry.worldInfoRuleVersion).sort(),
     [1, 2]
   );
+});
+
+test('current world-info rule alone owns prompt injection and coverage after dispatch', async () => {
+  const prompts = [];
+  const eventSource = createEventSource();
+  const entries = new Map();
+  const cacheStore = {
+    async get(key) {
+      return entries.get(key) ?? null;
+    },
+    async put(entry) {
+      const sourceUids = entry.sourceRefs.map((source) => source.parentUid ?? source.uid).join(',');
+      const saved = {
+        ...structuredClone(entry),
+        processedText: `RESULT-${entry.worldInfoRuleId}-v${entry.worldInfoRuleVersion}-${sourceUids}`
+      };
+      entries.set(saved.key, saved);
+      return structuredClone(saved);
+    },
+    async list() {
+      return [...entries.values()].map((entry) => structuredClone(entry));
+    },
+    async remove(key) {
+      entries.delete(key);
+    }
+  };
+  const context = {
+    chatId: 'chat-rule-prompt-isolation',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {
+      [SETTINGS_KEY]: {
+        maxWorkerInputTokens: 1000,
+        promptBlockMaxTokens: 12000,
+        worldInfoRules: [
+          { id: 'r1', name: 'Rule one', mode: 'include', entryUids: ['1', '2'], version: 1 },
+          { id: 'r2', name: 'Rule two', mode: 'include', entryUids: ['1'], version: 1 },
+          { id: 'r3', name: 'Rule three', mode: 'include', entryUids: [], version: 1 }
+        ],
+        rules: [{
+          id: 'airp-character-default',
+          name: 'Character worker',
+          maxInputTokens: 1000
+        }]
+      }
+    },
+    setExtensionPrompt: (...args) => prompts.push(args)
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    cacheStore,
+    worldInfoRepository: createCatalogRepository('Lore', {
+      entries: [{ uid: '1' }, { uid: '2' }]
+    }),
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, content: '甲'.repeat(600), disable: false }],
+    ['Lore.2', { uid: 2, content: '乙'.repeat(600), disable: false }]
+  ]));
+
+  const first = await app.dispatchCapturedWorldInfo({ worldInfoRuleId: 'r1' });
+  const second = await app.dispatchCapturedWorldInfo({ worldInfoRuleId: 'r2' });
+  const finalPrompt = prompts.at(-1)[1];
+
+  assert.equal(first.enqueued, 2);
+  assert.equal(second.enqueued, 1);
+  assert.equal(app.state.lastInjection.count, 1);
+  assert.match(finalPrompt, /RESULT-r2-v1-1/);
+  assert.doesNotMatch(finalPrompt, /RESULT-r1-v1-1/);
+  assert.doesNotMatch(finalPrompt, /RESULT-r1-v1-2/);
+  assert.equal(app.state.lastInjection.matchedSources, 1);
+
+  const third = await app.dispatchCapturedWorldInfo({ worldInfoRuleId: 'r3' });
+
+  assert.equal(third.enqueued, 0);
+  assert.equal(prompts.at(-1)[1], '');
+  assert.equal(app.state.lastInjection.count, 0);
+  assert.equal(app.state.lastInjection.matchedSources, 0);
 });
 
 test('dispatchCapturedWorldInfo batches by token limit and reuses completed cache', async () => {
@@ -932,6 +1057,113 @@ test('dispatchCapturedWorldInfo rejects a capture from a previous chat', async (
   assert.equal(result.enqueued, 0);
   assert.equal(result.staleCapture, true);
   assert.equal(app.state.tasks.length, 0);
+});
+
+test('an older character catalog read cannot continue dispatch after a newer read wins', async () => {
+  const eventSource = createEventSource();
+  const oldRead = createDeferred();
+  let readCount = 0;
+  const worldInfoRepository = {
+    async readActive() {
+      readCount += 1;
+      if (readCount === 1) return oldRead.promise;
+      return createWorldInfoCatalog('Lore', { characterRef: 'character:new.png' });
+    }
+  };
+  const context = {
+    chatId: 'chat-character-read-race',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt() {}
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    worldInfoRepository,
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, content: 'Same-scope source', disable: false }]
+  ]));
+
+  const oldDispatchPromise = app.dispatchCapturedWorldInfo();
+  await waitForMicrotasks();
+  const currentDispatch = await app.dispatchCapturedWorldInfo();
+  oldRead.resolve(createWorldInfoCatalog('Lore', { characterRef: 'character:old.png' }));
+  const oldDispatch = await oldDispatchPromise;
+
+  assert.equal(currentDispatch.enqueued, 1);
+  assert.equal(oldDispatch.staleCapture, true);
+  assert.equal(oldDispatch.enqueued, 0);
+  assert.equal(oldDispatch.cacheHits, 0);
+  assert.equal(app.state.tasks.length, 1);
+  assert.equal(app.state.worldInfoCatalog.characterRef, 'character:new.png');
+});
+
+test('same-scope character world mismatch fails closed without dispatch', async () => {
+  const eventSource = createEventSource();
+  const context = {
+    chatId: 'chat-same-scope-character-switch',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt() {}
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    worldInfoRepository: createCatalogRepository('NewCharacterLore', {
+      characterRef: 'character:new.png'
+    }),
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['OldCharacterLore.1', { uid: 1, content: 'Old character source', disable: false }]
+  ]));
+
+  const result = await app.dispatchCapturedWorldInfo();
+
+  assert.equal(result.captured, 1);
+  assert.equal(result.passed, 0);
+  assert.equal(result.enqueued, 0);
+  assert.equal(app.state.tasks.length, 0);
+});
+
+test('destroy during a character catalog read prevents state render and worker side effects', async () => {
+  const eventSource = createEventSource();
+  const pendingRead = createDeferred();
+  const root = createPanelRoot();
+  const context = {
+    chatId: 'chat-destroy-catalog-read',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt() {}
+  };
+  const app = await startTtAgentPlus727(createWindowRef({
+    document: createAutoMountDocument(root)
+  }), {
+    worldInfoRepository: { readActive: async () => pendingRead.promise },
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, content: 'Must not run', disable: false }]
+  ]));
+
+  const dispatchPromise = app.dispatchCapturedWorldInfo();
+  await waitForMicrotasks();
+  app.destroy();
+  const renderCountAfterDestroy = root.renderCount;
+  pendingRead.resolve(createWorldInfoCatalog('Lore', { characterRef: 'character:late.png' }));
+  const result = await dispatchPromise;
+
+  assert.equal(result.staleCapture, true);
+  assert.equal(result.enqueued, 0);
+  assert.equal(app.state.tasks.length, 0);
+  assert.equal(app.state.worldInfoCatalog.characterRef, '');
+  assert.equal(root.renderCount, renderCountAfterDestroy);
 });
 
 test('dispatchCapturedWorldInfo keeps one scope snapshot when a newer scan arrives', async () => {

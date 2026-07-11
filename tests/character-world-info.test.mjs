@@ -52,10 +52,11 @@ test('prefers an embedded character book without loading its named world', async
 
 test('treats an embedded book with empty entries as active', async () => {
   let loadCalls = 0;
+  let entries = [];
   const repository = createCharacterWorldInfoRepository({
     getContext: () => ({
       characters: [character({
-        character_book: { entries: [] },
+        character_book: { entries },
         extensions: { world: 'Named lore' }
       })]
     }),
@@ -71,6 +72,35 @@ test('treats an embedded book with empty entries as active', async () => {
   assert.equal(catalog.worldRef, 'embedded:character:mira.png');
   assert.deepEqual(catalog.entries, []);
   assert.equal(loadCalls, 0);
+
+  entries = {};
+  assert.deepEqual((await repository.readActive()).entries, []);
+  assert.equal(loadCalls, 0);
+});
+
+test('falls back from malformed embedded books to the bound named world', async () => {
+  const malformedEntries = [undefined, null, 'not entries', 1, new Date(), new Map()];
+
+  for (const entries of malformedEntries) {
+    let loadCalls = 0;
+    const repository = createCharacterWorldInfoRepository({
+      getContext: () => ({
+        characters: [character({
+          character_book: { entries },
+          extensions: { world: 'Named lore' }
+        })]
+      }),
+      loadWorldInfo: async (name) => {
+        loadCalls += 1;
+        assert.equal(name, 'Named lore');
+        return { entries: [] };
+      }
+    });
+
+    const catalog = await repository.readActive();
+    assert.equal(catalog.worldRef, 'named:Named lore');
+    assert.equal(loadCalls, 1);
+  }
 });
 
 test('loads a named character world book when no embedded book exists', async () => {
@@ -293,4 +323,50 @@ test('ST loader reports unavailable fetch, invalid names, failed responses, and 
     fetchFn: async () => ({ ok: true, json: async () => null })
   });
   await assert.rejects(() => invalidJson('Lore'), /角色世界书响应无效/);
+});
+
+test('ST loader labels a missing response status and wraps fetch failures', async () => {
+  const missingResponse = createStWorldInfoLoader({
+    fetchFn: async () => undefined
+  });
+  await assert.rejects(() => missingResponse('Lore'), /读取角色世界书失败: unknown/);
+
+  const rejectedFetch = createStWorldInfoLoader({
+    fetchFn: async () => {
+      throw new Error('network down');
+    }
+  });
+  await assert.rejects(() => rejectedFetch('Lore'), /读取角色世界书失败: network down/);
+});
+
+test('ST loader wraps thrown and rejected JSON parsing failures', async () => {
+  const thrownJson = createStWorldInfoLoader({
+    fetchFn: async () => ({
+      ok: true,
+      json() {
+        throw new Error('parser exploded');
+      }
+    })
+  });
+  await assert.rejects(() => thrownJson('Lore'), /角色世界书响应无效: parser exploded/);
+
+  const rejectedJson = createStWorldInfoLoader({
+    fetchFn: async () => ({
+      ok: true,
+      json: async () => Promise.reject(new Error('body aborted'))
+    })
+  });
+  await assert.rejects(() => rejectedJson('Lore'), /角色世界书响应无效: body aborted/);
+});
+
+test('ST loader rejects null, array, and primitive JSON bodies as invalid', async () => {
+  for (const body of [null, [], 'book', 1, false]) {
+    const loader = createStWorldInfoLoader({
+      fetchFn: async () => ({ ok: true, json: async () => body })
+    });
+    await assert.rejects(
+      () => loader('Lore'),
+      (error) => error?.message === '角色世界书响应无效'
+    );
+  }
 });

@@ -7,7 +7,10 @@ export function createCharacterWorldInfoRepository({ getContext, loadWorldInfo }
       const characterName = nonEmptyString(character?.name, '当前角色');
       const characterRef = activeCharacterRef(character, characterId);
       const data = isRecord(character?.data) ? character.data : {};
-      const embeddedBook = isRecord(data.character_book) ? data.character_book : null;
+      const characterBook = data.character_book;
+      const embeddedBook = isRecord(characterBook) && isSupportedEntriesContainer(characterBook.entries)
+        ? characterBook
+        : null;
 
       if (embeddedBook) {
         return {
@@ -46,19 +49,29 @@ export function createStWorldInfoLoader({ fetchFn, getContext } = {}) {
     const worldName = nonEmptyString(name, '');
     if (!worldName) throw new Error('世界书名称不能为空');
 
-    const response = await fetchFn('/api/worldinfo/get', {
-      method: 'POST',
-      headers: requestHeaders(safeGetContext(getContext)),
-      body: JSON.stringify({ name: worldName })
-    });
+    let response;
+    try {
+      response = await fetchFn('/api/worldinfo/get', {
+        method: 'POST',
+        headers: requestHeaders(safeGetContext(getContext)),
+        body: JSON.stringify({ name: worldName })
+      });
+    } catch (error) {
+      throw new Error(`读取角色世界书失败: ${errorMessage(error)}`);
+    }
     if (response?.ok !== true) {
-      throw new Error(`读取角色世界书失败: ${response?.status}`);
+      throw new Error(`读取角色世界书失败: ${response?.status ?? 'unknown'}`);
     }
     if (typeof response.json !== 'function') {
       throw new Error('角色世界书响应无效');
     }
 
-    const book = await response.json();
+    let book;
+    try {
+      book = await response.json();
+    } catch (error) {
+      throw new Error(`角色世界书响应无效: ${errorMessage(error)}`);
+    }
     if (!isRecord(book)) throw new Error('角色世界书响应无效');
     return book;
   };
@@ -107,7 +120,7 @@ function emptyCatalog(characterRef, characterName) {
 function normalizeEntries(rawEntries) {
   const entries = Array.isArray(rawEntries)
     ? rawEntries
-    : isRecord(rawEntries)
+    : isPlainObject(rawEntries)
       ? Object.values(rawEntries)
       : [];
 
@@ -182,4 +195,22 @@ function nonEmptyString(value, fallback) {
 
 function isRecord(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isSupportedEntriesContainer(value) {
+  return Array.isArray(value) || isPlainObject(value);
+}
+
+function isPlainObject(value) {
+  if (!isRecord(value)) return false;
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  } catch {
+    return false;
+  }
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
 }

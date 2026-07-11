@@ -24,6 +24,11 @@ function nonEmptyString(value, fallback) {
   return typeof value === 'string' && value ? value : fallback;
 }
 
+function trimmedNonEmptyString(value, fallback) {
+  if (typeof value !== 'string') return fallback;
+  return value.trim() || fallback;
+}
+
 function normalizeRule(defaultRule, savedRule) {
   const source = isRecord(savedRule) ? savedRule : {};
   return {
@@ -33,7 +38,7 @@ function normalizeRule(defaultRule, savedRule) {
     systemInstruction: nonEmptyString(source.systemInstruction, defaultRule.systemInstruction),
     outputSchema: nonEmptyString(source.outputSchema, defaultRule.outputSchema),
     modelProfileId: nonEmptyString(source.modelProfileId, defaultRule.modelProfileId),
-    worldInfoRuleId: nonEmptyString(source.worldInfoRuleId, defaultRule.worldInfoRuleId),
+    worldInfoRuleId: trimmedNonEmptyString(source.worldInfoRuleId, defaultRule.worldInfoRuleId),
     maxInputTokens: clampInteger(source.maxInputTokens, defaultRule.maxInputTokens, 1000, 200000),
     targetOutputTokens: clampInteger(source.targetOutputTokens, defaultRule.targetOutputTokens, 100, 12000),
     allowChildDispatch: typeof source.allowChildDispatch === 'boolean'
@@ -74,19 +79,21 @@ function mergeWorldInfoRules(sourceRules, defaultRules) {
   const defaultBuiltinRule = defaultRules.find(
     (rule) => rule.id === BUILTIN_ALL_WORLD_INFO_RULE_ID
   ) ?? defaultRules[0];
-  const savedBuiltinRule = savedRules.find(
-    (rule) => typeof rule.id === 'string'
-      && rule.id.trim() === BUILTIN_ALL_WORLD_INFO_RULE_ID
-  );
+  const normalizedRulesById = new Map();
+  for (const rule of savedRules) {
+    if (typeof rule.id !== 'string' || !rule.id.trim()) continue;
+    const normalizedRule = normalizeWorldInfoRule(rule);
+    normalizedRulesById.set(normalizedRule.id, normalizedRule);
+  }
+  const savedBuiltinRule = normalizedRulesById.get(BUILTIN_ALL_WORLD_INFO_RULE_ID);
   const builtinRule = normalizeWorldInfoRule({
     ...defaultBuiltinRule,
     ...savedBuiltinRule,
     id: BUILTIN_ALL_WORLD_INFO_RULE_ID,
     builtin: true
   });
-  const customRules = savedRules
-    .map((rule) => normalizeWorldInfoRule(rule))
-    .filter((rule) => rule.id !== BUILTIN_ALL_WORLD_INFO_RULE_ID)
+  normalizedRulesById.delete(BUILTIN_ALL_WORLD_INFO_RULE_ID);
+  const customRules = [...normalizedRulesById.values()]
     .map((rule) => ({ ...rule, builtin: false }));
 
   return [builtinRule, ...customRules];

@@ -249,6 +249,92 @@ test('mergeSettings validates sub-AI world-info rule references after merging', 
   );
 });
 
+test('mergeSettings trims world-info rule IDs and sub-AI references', () => {
+  const settings = mergeSettings({
+    worldInfoRules: [
+      { id: ' world-info-custom ', name: 'Custom selection', entryUids: [] }
+    ],
+    rules: [
+      {
+        id: 'airp-character-default',
+        worldInfoRuleId: ' world-info-custom '
+      },
+      {
+        id: 'custom-sub-ai',
+        name: 'Custom sub AI',
+        worldInfoRuleId: '   '
+      }
+    ]
+  });
+
+  assert.equal(settings.worldInfoRules[1].id, 'world-info-custom');
+  assert.equal(settings.rules[0].worldInfoRuleId, 'world-info-custom');
+  assert.equal(
+    settings.rules.find((rule) => rule.id === 'custom-sub-ai').worldInfoRuleId,
+    'world-info-all'
+  );
+});
+
+test('mergeSettings deduplicates normalized world-info rule IDs with last-wins', () => {
+  const settings = mergeSettings({
+    worldInfoRules: [
+      { id: 'world-info-all', name: 'First builtin', entryUids: [1] },
+      { id: 'dup', name: 'First exact', entryUids: [2] },
+      { id: 'dup', name: 'Last exact', entryUids: [3] },
+      { id: ' trim-dup ', name: 'First trimmed', entryUids: [4] },
+      { id: 'trim-dup', name: 'Last trimmed', entryUids: [5] },
+      { id: ' world-info-all ', name: 'Last builtin', entryUids: [6] }
+    ]
+  });
+
+  assert.deepEqual(
+    settings.worldInfoRules.map((rule) => rule.id),
+    ['world-info-all', 'dup', 'trim-dup']
+  );
+  assert.equal(settings.worldInfoRules[0].name, 'Last builtin');
+  assert.equal(settings.worldInfoRules[0].builtin, true);
+  assert.deepEqual(settings.worldInfoRules[0].entryUids, ['6']);
+  assert.equal(settings.worldInfoRules[1].name, 'Last exact');
+  assert.deepEqual(settings.worldInfoRules[1].entryUids, ['3']);
+  assert.equal(settings.worldInfoRules[2].name, 'Last trimmed');
+  assert.deepEqual(settings.worldInfoRules[2].entryUids, ['5']);
+});
+
+test('exported default world-info rules cannot be mutated', () => {
+  const defaultRule = DEFAULT_WORLD_INFO_RULES[0];
+  const originalName = defaultRule.name;
+  const originalEntryUids = [...defaultRule.entryUids];
+  let nameMutationError;
+  let entryUidsMutationError;
+  let settings;
+
+  try {
+    try {
+      defaultRule.name = 'polluted';
+    } catch (error) {
+      nameMutationError = error;
+    }
+    try {
+      defaultRule.entryUids.push('polluted');
+    } catch (error) {
+      entryUidsMutationError = error;
+    }
+    settings = mergeSettings();
+  } finally {
+    if (!Object.isFrozen(defaultRule)) defaultRule.name = originalName;
+    if (!Object.isFrozen(defaultRule.entryUids)) {
+      defaultRule.entryUids.splice(0, defaultRule.entryUids.length, ...originalEntryUids);
+    }
+  }
+
+  assert.equal(Object.isFrozen(defaultRule), true);
+  assert.equal(Object.isFrozen(defaultRule.entryUids), true);
+  assert.ok(nameMutationError instanceof TypeError);
+  assert.ok(entryUidsMutationError instanceof TypeError);
+  assert.equal(settings.worldInfoRules[0].name, originalName);
+  assert.deepEqual(settings.worldInfoRules[0].entryUids, originalEntryUids);
+});
+
 test('mergeSettings preserves default rules when one rule is overridden', () => {
   const settings = mergeSettings({
     rules: [

@@ -2,15 +2,15 @@ import { APPROVAL_MODES, OUTPUT_MODES } from './constants.js';
 import { BUILTIN_ALL_WORLD_INFO_RULE_ID } from './worldInfoRules.js';
 
 export const DEFAULT_WORLD_INFO_RULES = Object.freeze([
-  {
+  Object.freeze({
     id: BUILTIN_ALL_WORLD_INFO_RULE_ID,
     name: '全部条目',
     worldRef: '',
     mode: 'exclude',
-    entryUids: [],
+    entryUids: Object.freeze([]),
     version: 1,
     builtin: true
-  }
+  })
 ]);
 
 export const DEFAULT_RULE_TEMPLATES = Object.freeze([

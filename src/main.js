@@ -5,6 +5,10 @@ import {
   createMemoryCacheDriver,
   createProcessedCacheStore
 } from './cacheStore.js';
+import {
+  createCharacterWorldInfoRepository,
+  createStWorldInfoLoader
+} from './characterWorldInfo.js';
 import { MODULE_ID } from './constants.js';
 import { createDebugLog } from './debugLog.js';
 import { createDispatcher } from './dispatcher.js';
@@ -28,6 +32,12 @@ import {
   resolveWorldInfoScopeId,
   subscribeWorldInfoScans
 } from './worldInfoCapture.js';
+import {
+  BUILTIN_ALL_WORLD_INFO_RULE_ID,
+  filterWorldInfoEntries,
+  normalizeWorldInfoRule,
+  summarizeWorldInfoFilter
+} from './worldInfoRules.js';
 
 const slashRegisteredParsers = new WeakSet();
 const slashParserOpeners = new WeakMap();
@@ -114,6 +124,13 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     });
   }
   const getHostContext = options.getContext ?? stRuntime.getContext ?? hostWindow.getContext;
+  const worldInfoRepository = options.worldInfoRepository ?? createCharacterWorldInfoRepository({
+    getContext: getHostContext,
+    loadWorldInfo: options.loadWorldInfo ?? createStWorldInfoLoader({
+      fetchFn: typeof hostWindow.fetch === 'function' ? hostWindow.fetch.bind(hostWindow) : undefined,
+      getContext: getHostContext
+    })
+  });
   const bridge = createHostBridge({
     windowRef: hostWindow,
     getContext: getHostContext,
@@ -144,6 +161,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
   let capturedTaskCounter = 0;
   let stopWorldInfoCapture = () => false;
   let worldInfoScanSequence = 0;
+  let worldInfoRefreshSequence = 0;
   let promptRefreshSequence = 0;
   let destroyed = false;
 
@@ -277,6 +295,25 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     render();
   }
 
+  async function refreshActiveCharacterWorldInfo() {
+    const refreshSequence = ++worldInfoRefreshSequence;
+    let catalog;
+    try {
+      catalog = normalizeWorldInfoCatalog(await worldInfoRepository.readActive());
+    } catch (error) {
+      safeDebug(debug, 'warn', 'world-info', '读取当前角色世界书目录失败', {
+        error: safeErrorMessage(error)
+      });
+      return emptyWorldInfoCatalog();
+    }
+
+    if (!destroyed && refreshSequence === worldInfoRefreshSequence) {
+      state = { ...state, worldInfoCatalog: cloneValue(catalog) };
+      render();
+    }
+    return cloneValue(catalog);
+  }
+
   async function dispatchManualSource(input = {}) {
     if (destroyed) return null;
     const source = normalizeManualSource(input, manualTaskCounter + 1);
@@ -313,25 +350,78 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     const captureSequence = worldInfoScanSequence;
     const captureScopeId = captureSnapshot?.scopeId ?? 'global';
     const capturedSources = Array.isArray(captureSnapshot?.entries) ? captureSnapshot.entries : [];
+    const ruleTemplateId = resolveRuleTemplateId(input.ruleTemplateId);
+    const ruleTemplate = state.settings.rules.find((item) => item?.id === ruleTemplateId) ?? {};
+    const worldInfoRule = resolveWorldInfoRule(input.worldInfoRuleId, ruleTemplate.worldInfoRuleId);
     if (!capturedSources.length) {
       debug.warn('world-info', '当前没有可加工的世界书命中条目', {});
-      return emptyCapturedDispatchResult();
+      return emptyCapturedDispatchResult({
+        worldInfoRuleId: worldInfoRule.id,
+        worldInfoRuleVersion: worldInfoRule.version
+      });
     }
     if (captureScopeId !== currentScopeId()) {
       debug.warn('world-info', '本轮世界书捕获已过期，请重新触发扫描', {
         captureScopeId,
         currentScopeId: currentScopeId()
       });
-      return emptyCapturedDispatchResult({ staleCapture: true });
+      return emptyCapturedDispatchResult({
+        worldInfoRuleId: worldInfoRule.id,
+        worldInfoRuleVersion: worldInfoRule.version,
+        staleCapture: true
+      });
     }
 
-    const ruleTemplateId = resolveRuleTemplateId(input.ruleTemplateId);
-    const rule = state.settings.rules.find((item) => item?.id === ruleTemplateId) ?? {};
+    const catalog = await refreshActiveCharacterWorldInfo();
+    if (!isCaptureCurrent(captureSequence, captureScopeId)) {
+      return emptyCapturedDispatchResult({
+        ...summarizeWorldInfoFilter(capturedSources, []),
+        worldInfoRuleId: worldInfoRule.id,
+        worldInfoRuleVersion: worldInfoRule.version,
+        staleCapture: true
+      });
+    }
+    if (!catalog.worldName) {
+      safeDebug(debug, 'warn', 'world-info', '当前角色未绑定可用世界书目录', {
+        characterRef: catalog.characterRef,
+        worldRef: catalog.worldRef,
+        ruleId: worldInfoRule.id
+      });
+    }
+    let filteredSources = [];
+    try {
+      filteredSources = filterWorldInfoEntries(capturedSources, worldInfoRule, catalog);
+    } catch (error) {
+      safeDebug(debug, 'warn', 'world-info', '世界书条目过滤失败，已阻止派发', {
+        error: safeErrorMessage(error),
+        ruleId: worldInfoRule.id
+      });
+    }
+    const filterSummary = summarizeWorldInfoFilter(capturedSources, filteredSources);
+    safeDebug(debug, 'info', 'world-info', '世界书条目过滤', {
+      characterRef: safeString(catalog.characterRef),
+      worldRef: safeString(catalog.worldRef),
+      ruleId: worldInfoRule.id,
+      mode: worldInfoRule.mode,
+      ...filterSummary,
+      invalidUids: findInvalidWorldInfoRuleUids(worldInfoRule, catalog)
+    });
+
+    if (!filteredSources.length) {
+      return emptyCapturedDispatchResult({
+        ...filterSummary,
+        worldInfoRuleId: worldInfoRule.id,
+        worldInfoRuleVersion: worldInfoRule.version
+      });
+    }
+
     const maxTokens = Math.min(
       state.settings.maxWorkerInputTokens,
-      Number.isFinite(rule.maxInputTokens) ? rule.maxInputTokens : state.settings.maxWorkerInputTokens
+      Number.isFinite(ruleTemplate.maxInputTokens)
+        ? ruleTemplate.maxInputTokens
+        : state.settings.maxWorkerInputTokens
     );
-    const batches = planSourceBatches(capturedSources, { maxTokens });
+    const batches = planSourceBatches(filteredSources, { maxTokens });
     const taskIds = [];
     let cacheHits = 0;
     let inFlight = 0;
@@ -346,8 +436,10 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
         scopeId: captureScopeId,
         sourceRefs: batch.sourceRefs,
         ruleTemplateId,
-        ruleVersion: rule.version ?? 1,
-        modelProfileId: rule.modelProfileId ?? 'current',
+        ruleVersion: ruleTemplate.version ?? 1,
+        worldInfoRuleId: worldInfoRule.id,
+        worldInfoRuleVersion: worldInfoRule.version,
+        modelProfileId: ruleTemplate.modelProfileId ?? 'current',
         depth: 0,
         tokenEstimate: batch.tokenEstimate
       };
@@ -393,7 +485,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     }
 
     debug.info('world-info', '世界书命中条目已规划', {
-      sources: capturedSources.length,
+      sources: filteredSources.length,
       planned: batches.length,
       enqueued: taskIds.length,
       cacheHits,
@@ -405,7 +497,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     if (taskIds.length) await pumpDispatcher();
     if (isCaptureCurrent(captureSequence, captureScopeId)) {
       await refreshPromptInjection({
-        activeSourceRefs: capturedSources,
+        activeSourceRefs: filteredSources,
         scopeId: captureScopeId,
         scanSequence: captureSequence
       });
@@ -419,7 +511,10 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
       cacheHits,
       inFlight,
       taskIds,
-      staleCapture
+      staleCapture,
+      ...filterSummary,
+      worldInfoRuleId: worldInfoRule.id,
+      worldInfoRuleVersion: worldInfoRule.version
     };
   }
 
@@ -594,6 +689,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     setTab,
     dispatchManualSource,
     dispatchCapturedWorldInfo,
+    refreshActiveCharacterWorldInfo,
     refreshPromptInjection,
     pumpDispatcher,
     exportDebug,
@@ -602,6 +698,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
       if (destroyed) return false;
       destroyed = true;
       worldInfoScanSequence += 1;
+      worldInfoRefreshSequence += 1;
       promptRefreshSequence += 1;
       return stopWorldInfoCapture();
     }
@@ -623,6 +720,17 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
       return candidate;
     }
     return rules.find((rule) => typeof rule?.id === 'string')?.id ?? 'airp-character-default';
+  }
+
+  function resolveWorldInfoRule(inputRuleId, templateRuleId) {
+    const candidate = typeof inputRuleId === 'string'
+      ? inputRuleId.trim()
+      : (typeof templateRuleId === 'string' ? templateRuleId.trim() : '');
+    const rules = Array.isArray(state.settings.worldInfoRules) ? state.settings.worldInfoRules : [];
+    const selected = rules.find((rule) => rule?.id === candidate)
+      ?? rules.find((rule) => rule?.id === BUILTIN_ALL_WORLD_INFO_RULE_ID)
+      ?? { id: BUILTIN_ALL_WORLD_INFO_RULE_ID, version: 1, mode: 'exclude', entryUids: [] };
+    return normalizeWorldInfoRule(selected);
   }
 
   function activeWorldInfoSourceRefs() {
@@ -700,6 +808,88 @@ function normalizeManualSource(input, sequence) {
   };
 }
 
+function emptyWorldInfoCatalog() {
+  return {
+    characterRef: '',
+    characterName: '',
+    worldRef: '',
+    worldName: '',
+    entries: []
+  };
+}
+
+function normalizeWorldInfoCatalog(input) {
+  const source = input && typeof input === 'object' ? input : {};
+  const rawEntries = safeProperty(source, 'entries');
+  const entries = Array.isArray(rawEntries)
+    ? rawEntries.map(normalizeWorldInfoCatalogEntry).filter(Boolean)
+    : [];
+  return {
+    characterRef: safeString(safeProperty(source, 'characterRef')),
+    characterName: safeString(safeProperty(source, 'characterName')),
+    worldRef: safeString(safeProperty(source, 'worldRef')),
+    worldName: safeString(safeProperty(source, 'worldName')),
+    entries
+  };
+}
+
+function normalizeWorldInfoCatalogEntry(input) {
+  if (!input || typeof input !== 'object') return null;
+  const uid = safeUid(safeProperty(input, 'uid'));
+  if (!uid) return null;
+  return {
+    uid,
+    displayName: safeString(safeProperty(input, 'displayName')),
+    content: safeString(safeProperty(input, 'content')),
+    disabled: safeProperty(input, 'disabled') === true,
+    constant: safeProperty(input, 'constant') === true
+  };
+}
+
+function findInvalidWorldInfoRuleUids(rule, catalog) {
+  const available = new Set(
+    (Array.isArray(catalog?.entries) ? catalog.entries : [])
+      .map((entry) => safeUid(safeProperty(entry, 'uid')))
+      .filter(Boolean)
+  );
+  return (Array.isArray(rule?.entryUids) ? rule.entryUids : [])
+    .map(safeUid)
+    .filter((uid) => uid && !available.has(uid));
+}
+
+function safeProperty(value, key) {
+  try {
+    return value?.[key];
+  } catch {
+    return undefined;
+  }
+}
+
+function safeString(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function safeUid(value) {
+  if (typeof value === 'string') return value.trim();
+  return typeof value === 'number' && Number.isFinite(value) ? String(value) : '';
+}
+
+function safeDebug(debug, level, channel, message, details) {
+  try {
+    debug?.[level]?.(channel, message, details);
+  } catch {
+    // Diagnostics must not interrupt filtering or dispatch.
+  }
+}
+
+function safeErrorMessage(error) {
+  try {
+    return error instanceof Error ? error.message : String(error);
+  } catch {
+    return 'unknown error';
+  }
+}
+
 function createCacheEntryFromCompletedTask(task, settings) {
   const result = task?.result;
   if (!result || typeof result.processedText !== 'string' || !result.processedText.trim()) {
@@ -723,6 +913,8 @@ function createCacheEntryFromCompletedTask(task, settings) {
     sourceHash: descriptor.sourceHash,
     ruleTemplateId: descriptor.ruleTemplateId,
     ruleVersion: descriptor.ruleVersion,
+    worldInfoRuleId: descriptor.worldInfoRuleId,
+    worldInfoRuleVersion: descriptor.worldInfoRuleVersion,
     modelProfileId: descriptor.modelProfileId,
     promptVersion: descriptor.promptVersion,
     sourceRefs,
@@ -747,11 +939,17 @@ function createTaskCacheDescriptor(task, settings) {
   const rule = Array.isArray(settings?.rules)
     ? settings.rules.find((item) => item?.id === task?.ruleTemplateId)
     : null;
+  const worldInfoRuleId = task?.worldInfoRuleId ?? BUILTIN_ALL_WORLD_INFO_RULE_ID;
+  const worldInfoRule = Array.isArray(settings?.worldInfoRules)
+    ? settings.worldInfoRules.find((item) => item?.id === worldInfoRuleId)
+    : null;
   return {
     scopeId: task?.scopeId ?? task?.chatId ?? 'global',
     sourceHash: hashSourceRefs(sourceRefs),
     ruleTemplateId: task?.ruleTemplateId ?? 'unknown-rule',
     ruleVersion: rule?.version ?? task?.ruleVersion ?? 1,
+    worldInfoRuleId,
+    worldInfoRuleVersion: worldInfoRule?.version ?? task?.worldInfoRuleVersion ?? 1,
     modelProfileId: task?.modelProfileId ?? 'current',
     promptVersion: PROMPT_BLOCK_VERSION
   };
@@ -767,6 +965,8 @@ function cacheEntryMatchesDescriptor(entry, descriptor) {
     sourceHash: entry?.sourceHash,
     ruleTemplateId: entry?.ruleTemplateId,
     ruleVersion: entry?.ruleVersion,
+    worldInfoRuleId: entry?.worldInfoRuleId,
+    worldInfoRuleVersion: entry?.worldInfoRuleVersion,
     modelProfileId: entry?.modelProfileId,
     promptVersion: entry?.promptVersion
   };
@@ -778,6 +978,8 @@ function cacheEntryMatchesDescriptor(entry, descriptor) {
     && entry.sourceHash === descriptor.sourceHash
     && entry.ruleTemplateId === descriptor.ruleTemplateId
     && entry.ruleVersion === descriptor.ruleVersion
+    && entry.worldInfoRuleId === descriptor.worldInfoRuleId
+    && entry.worldInfoRuleVersion === descriptor.worldInfoRuleVersion
     && entry.modelProfileId === descriptor.modelProfileId
     && entry.promptVersion === descriptor.promptVersion
   );
@@ -791,6 +993,11 @@ function emptyCapturedDispatchResult(overrides = {}) {
     inFlight: 0,
     taskIds: [],
     staleCapture: false,
+    captured: 0,
+    passed: 0,
+    excluded: 0,
+    worldInfoRuleId: BUILTIN_ALL_WORLD_INFO_RULE_ID,
+    worldInfoRuleVersion: 1,
     ...overrides
   };
 }

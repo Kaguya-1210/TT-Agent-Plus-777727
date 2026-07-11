@@ -446,6 +446,329 @@ test('newest concurrent prompt refresh owns the final prompt', async () => {
   assert.doesNotMatch(prompts.at(-1)[1], /较旧的提示词/);
 });
 
+test('refreshActiveCharacterWorldInfo lazily loads the active character named world', async () => {
+  const requests = [];
+  const context = {
+    characterId: 0,
+    characters: [{
+      name: 'Mira',
+      avatar: 'mira.png',
+      data: { extensions: { world: 'Lore' } }
+    }],
+    extensionSettings: {},
+    getRequestHeaders: () => ({ Authorization: 'Bearer test' })
+  };
+  const windowRef = createWindowRef({
+    fetch: async (...args) => {
+      requests.push(args);
+      return {
+        ok: true,
+        json: async () => ({ entries: [{ uid: 1, comment: 'Origin', content: 'Traveller' }] })
+      };
+    }
+  });
+
+  const app = await startTtAgentPlus727(windowRef, {
+    autoMount: false,
+    getContext: () => context
+  });
+
+  assert.equal(requests.length, 0);
+  const catalog = await app.refreshActiveCharacterWorldInfo();
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0][0], '/api/worldinfo/get');
+  assert.deepEqual(catalog, app.state.worldInfoCatalog);
+  assert.equal(catalog.characterRef, 'character:mira.png');
+  assert.equal(catalog.worldRef, 'named:Lore');
+  assert.deepEqual(catalog.entries.map((entry) => entry.uid), ['1']);
+});
+
+test('dispatchCapturedWorldInfo filters the active character main book before batching', async () => {
+  const eventSource = createEventSource();
+  const context = {
+    chatId: 'chat-filtered',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {
+      [SETTINGS_KEY]: {
+        worldInfoRules: [{
+          id: '01',
+          name: '角色条目',
+          worldRef: 'embedded:character:hero.png',
+          mode: 'include',
+          entryUids: ['1', '2'],
+          version: 7
+        }],
+        rules: [{
+          id: 'airp-character-default',
+          name: '角色加工',
+          worldInfoRuleId: 'world-info-all'
+        }]
+      }
+    },
+    setExtensionPrompt() {}
+  };
+  const repository = createCatalogRepository('角色主书', {
+    characterRef: 'character:hero.png',
+    worldRef: 'embedded:character:hero.png',
+    entries: [{ uid: '1' }, { uid: '2' }, { uid: '3' }]
+  });
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    worldInfoRepository: repository,
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['角色主书.1', { uid: 1, comment: '一', content: 'PRIVATE-CONTENT-ONE', disable: false }],
+    ['角色主书.2', { uid: 2, comment: '二', content: 'PRIVATE-CONTENT-TWO', disable: false }],
+    ['角色主书.3', { uid: 3, comment: '三', content: 'PRIVATE-CONTENT-THREE', disable: false }]
+  ]));
+
+  const result = await app.dispatchCapturedWorldInfo({
+    ruleTemplateId: 'airp-character-default',
+    worldInfoRuleId: '01'
+  });
+
+  assert.deepEqual({
+    captured: result.captured,
+    passed: result.passed,
+    excluded: result.excluded
+  }, { captured: 3, passed: 2, excluded: 1 });
+  assert.equal(result.worldInfoRuleId, '01');
+  assert.equal(result.worldInfoRuleVersion, 7);
+  assert.equal(result.enqueued, 1);
+  assert.deepEqual(app.state.tasks[0].sourceRefs.map((entry) => entry.uid), [1, 2]);
+  assert.equal(app.state.tasks[0].worldInfoRuleId, '01');
+  assert.equal(app.state.tasks[0].worldInfoRuleVersion, 7);
+
+  const [saved] = await app.cache.list();
+  assert.equal(saved.worldInfoRuleId, '01');
+  assert.equal(saved.worldInfoRuleVersion, 7);
+  const diagnostic = app.debug.entries().find((entry) => entry.message === '世界书条目过滤');
+  assert.deepEqual(diagnostic.details, {
+    characterRef: 'character:hero.png',
+    worldRef: 'embedded:character:hero.png',
+    ruleId: '01',
+    mode: 'include',
+    captured: 3,
+    passed: 2,
+    excluded: 1,
+    invalidUids: []
+  });
+  assert.doesNotMatch(JSON.stringify(app.debug.entries()), /PRIVATE-CONTENT/);
+});
+
+test('dispatchCapturedWorldInfo uses the sub-AI default and invalid IDs fall back to all entries', async () => {
+  const eventSource = createEventSource();
+  const context = {
+    chatId: 'chat-default-world-rule',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt() {}
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    worldInfoRepository: createCatalogRepository('Lore'),
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, content: 'A', disable: false }],
+    ['Lore.2', { uid: 2, content: 'B', disable: false }]
+  ]));
+
+  const defaultResult = await app.dispatchCapturedWorldInfo();
+  const invalidResult = await app.dispatchCapturedWorldInfo({ worldInfoRuleId: 'missing-rule' });
+
+  assert.equal(defaultResult.worldInfoRuleId, 'world-info-all');
+  assert.deepEqual(
+    { captured: defaultResult.captured, passed: defaultResult.passed, excluded: defaultResult.excluded },
+    { captured: 2, passed: 2, excluded: 0 }
+  );
+  assert.equal(invalidResult.worldInfoRuleId, 'world-info-all');
+  assert.equal(invalidResult.passed, 2);
+});
+
+test('dispatchCapturedWorldInfo reports the selected rule when there are no captured entries', async () => {
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    worldInfoRepository: createCatalogRepository('Lore'),
+    getContext: () => ({
+      extensionSettings: {
+        [SETTINGS_KEY]: {
+          worldInfoRules: [{
+            id: 'empty-capture-rule',
+            name: '空捕获规则',
+            mode: 'include',
+            entryUids: ['1'],
+            version: 4
+          }]
+        }
+      }
+    })
+  });
+
+  const result = await app.dispatchCapturedWorldInfo({ worldInfoRuleId: 'empty-capture-rule' });
+
+  assert.equal(result.worldInfoRuleId, 'empty-capture-rule');
+  assert.equal(result.worldInfoRuleVersion, 4);
+  assert.equal(result.captured, 0);
+  assert.equal(result.planned, 0);
+});
+
+test('dispatchCapturedWorldInfo fails closed for missing or unreadable active world catalogs', async () => {
+  for (const [label, worldInfoRepository] of [
+    ['missing', { readActive: async () => createWorldInfoCatalog('') }],
+    ['failed', { readActive: async () => { throw new Error('repository unavailable'); } }]
+  ]) {
+    const eventSource = createEventSource();
+    const context = {
+      chatId: `chat-${label}-catalog`,
+      eventSource,
+      eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+      extensionSettings: {},
+      setExtensionPrompt() {}
+    };
+    const app = await startTtAgentPlus727(createWindowRef(), {
+      autoMount: false,
+      worldInfoRepository,
+      getContext: () => context,
+      extensionPromptTypes: { IN_PROMPT: 7 }
+    });
+    await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+      ['Lore.1', { uid: 1, content: `DO-NOT-DISPATCH-${label}`, disable: false }]
+    ]));
+
+    const result = await app.dispatchCapturedWorldInfo();
+
+    assert.deepEqual(
+      { captured: result.captured, passed: result.passed, excluded: result.excluded },
+      { captured: 1, passed: 0, excluded: 1 }
+    );
+    assert.equal(result.planned, 0);
+    assert.equal(result.enqueued, 0);
+    assert.equal(app.state.tasks.length, 0);
+    assert.doesNotMatch(JSON.stringify(app.debug.entries()), /DO-NOT-DISPATCH/);
+    if (label === 'failed') {
+      assert.ok(app.debug.entries().some((entry) => (
+        entry.channel === 'world-info'
+        && entry.level === 'warn'
+        && entry.message === '读取当前角色世界书目录失败'
+        && entry.details.error === 'repository unavailable'
+      )));
+    }
+  }
+});
+
+test('empty world-info filtering does not enqueue or run a worker and reports invalid UIDs safely', async () => {
+  const eventSource = createEventSource();
+  const unsafeEntry = {};
+  Object.defineProperty(unsafeEntry, 'uid', {
+    enumerable: true,
+    get() {
+      throw new Error('unsafe catalog UID getter');
+    }
+  });
+  const context = {
+    chatId: 'chat-empty-filter',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {
+      [SETTINGS_KEY]: {
+        worldInfoRules: [{
+          id: 'empty-include',
+          name: '空选择',
+          mode: 'include',
+          entryUids: ['404'],
+          version: 2
+        }]
+      }
+    },
+    setExtensionPrompt() {}
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    worldInfoRepository: createCatalogRepository('Lore', { entries: [unsafeEntry] }),
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, content: 'PRIVATE-EMPTY-FILTER', disable: false }]
+  ]));
+
+  const result = await app.dispatchCapturedWorldInfo({ worldInfoRuleId: 'empty-include' });
+
+  assert.equal(result.passed, 0);
+  assert.equal(result.planned, 0);
+  assert.equal(result.enqueued, 0);
+  assert.equal(app.state.tasks.length, 0);
+  const diagnostic = app.debug.entries().find((entry) => entry.message === '世界书条目过滤');
+  assert.deepEqual(diagnostic.details.invalidUids, ['404']);
+  assert.doesNotMatch(JSON.stringify(app.debug.entries()), /PRIVATE-EMPTY-FILTER/);
+});
+
+test('changing only the world-info rule version causes a cache miss', async () => {
+  const eventSource = createEventSource();
+  const cacheStore = createMapCacheStore();
+  let version = 1;
+  const context = {
+    chatId: 'chat-rule-version',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    get extensionSettings() {
+      return {
+        [SETTINGS_KEY]: {
+          worldInfoRules: [{
+            id: 'versioned-rule',
+            name: '版本规则',
+            mode: 'include',
+            entryUids: ['1'],
+            version
+          }],
+          rules: [{
+            id: 'airp-character-default',
+            name: '角色加工',
+            worldInfoRuleId: 'versioned-rule'
+          }]
+        }
+      };
+    },
+    setExtensionPrompt() {}
+  };
+  const options = {
+    autoMount: false,
+    cacheStore,
+    worldInfoRepository: createCatalogRepository('Lore'),
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  };
+  const firstApp = await startTtAgentPlus727(createWindowRef(), options);
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, content: 'Same source', disable: false }]
+  ]));
+  const first = await firstApp.dispatchCapturedWorldInfo();
+  firstApp.destroy();
+
+  version = 2;
+  const secondApp = await startTtAgentPlus727(createWindowRef(), options);
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, content: 'Same source', disable: false }]
+  ]));
+  const second = await secondApp.dispatchCapturedWorldInfo();
+
+  assert.equal(first.enqueued, 1);
+  assert.equal(second.cacheHits, 0);
+  assert.equal(second.enqueued, 1);
+  assert.equal((await cacheStore.list()).length, 2);
+  assert.deepEqual(
+    (await cacheStore.list()).map((entry) => entry.worldInfoRuleVersion).sort(),
+    [1, 2]
+  );
+});
+
 test('dispatchCapturedWorldInfo batches by token limit and reuses completed cache', async () => {
   const eventSource = createEventSource();
   const context = {
@@ -463,6 +786,7 @@ test('dispatchCapturedWorldInfo batches by token limit and reuses completed cach
   };
   const app = await startTtAgentPlus727(createWindowRef(), {
     autoMount: false,
+    worldInfoRepository: createCatalogRepository('Lore'),
     getContext: () => context,
     extensionPromptTypes: { IN_PROMPT: 7 }
   });
@@ -497,6 +821,7 @@ test('dispatchCapturedWorldInfo batches by token limit and reuses completed cach
 
 test('dispatchCapturedWorldInfo does not share cache keys across world books', async () => {
   const eventSource = createEventSource();
+  let worldName = '世界书A';
   const context = {
     chatId: 'chat-world-key',
     eventSource,
@@ -506,6 +831,7 @@ test('dispatchCapturedWorldInfo does not share cache keys across world books', a
   };
   const app = await startTtAgentPlus727(createWindowRef(), {
     autoMount: false,
+    worldInfoRepository: { readActive: async () => createWorldInfoCatalog(worldName) },
     getContext: () => context,
     extensionPromptTypes: { IN_PROMPT: 7 }
   });
@@ -514,6 +840,7 @@ test('dispatchCapturedWorldInfo does not share cache keys across world books', a
   ]));
   const first = await app.dispatchCapturedWorldInfo();
 
+  worldName = '世界书B';
   await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
     ['世界书B.1', { uid: 1, comment: '角色A', content: '相同内容', disable: false }]
   ]));
@@ -578,6 +905,7 @@ test('dispatchCapturedWorldInfo keeps one scope snapshot when a newer scan arriv
   const app = await startTtAgentPlus727(createWindowRef(), {
     autoMount: false,
     cacheStore,
+    worldInfoRepository: createCatalogRepository('Lore'),
     getContext: () => context,
     extensionPromptTypes: { IN_PROMPT: 7 }
   });
@@ -618,6 +946,7 @@ test('dispatchCapturedWorldInfo rechecks its capture after removing invalid cach
   const app = await startTtAgentPlus727(createWindowRef(), {
     autoMount: false,
     cacheStore,
+    worldInfoRepository: createCatalogRepository('Lore'),
     getContext: () => context,
     extensionPromptTypes: { IN_PROMPT: 7 }
   });
@@ -655,6 +984,7 @@ test('dispatchCapturedWorldInfo retries completed work when its cache write fail
   const app = await startTtAgentPlus727(createWindowRef(), {
     autoMount: false,
     cacheStore,
+    worldInfoRepository: createCatalogRepository('Lore'),
     getContext: () => context,
     extensionPromptTypes: { IN_PROMPT: 7 }
   });
@@ -682,6 +1012,7 @@ test('dispatchCapturedWorldInfo replaces malformed cache instead of reporting a 
   };
   const app = await startTtAgentPlus727(createWindowRef(), {
     autoMount: false,
+    worldInfoRepository: createCatalogRepository('Lore'),
     getContext: () => context,
     extensionPromptTypes: { IN_PROMPT: 7 }
   });
@@ -710,6 +1041,7 @@ test('dispatchCapturedWorldInfo rejects cache whose source refs do not match its
   };
   const app = await startTtAgentPlus727(createWindowRef(), {
     autoMount: false,
+    worldInfoRepository: createCatalogRepository('Lore'),
     getContext: () => context,
     extensionPromptTypes: { IN_PROMPT: 7 }
   });
@@ -1271,6 +1603,44 @@ function createWorldInfoScanEvent(entries) {
     state: { current: 1, next: 2, loopCount: 0 },
     activated: { entries: new Map(entries), text: '' },
     budget: { current: 100, overflowed: false }
+  };
+}
+
+function createWorldInfoCatalog(worldName, overrides = {}) {
+  return {
+    characterRef: 'character:test.png',
+    characterName: 'Test',
+    worldRef: worldName ? `named:${worldName}` : '',
+    worldName,
+    entries: [],
+    ...overrides
+  };
+}
+
+function createCatalogRepository(worldName, overrides = {}) {
+  return {
+    async readActive() {
+      return createWorldInfoCatalog(worldName, overrides);
+    }
+  };
+}
+
+function createMapCacheStore() {
+  const entries = new Map();
+  return {
+    async get(key) {
+      return entries.get(key) ?? null;
+    },
+    async put(entry) {
+      entries.set(entry.key, structuredClone(entry));
+      return structuredClone(entry);
+    },
+    async list() {
+      return [...entries.values()].map((entry) => structuredClone(entry));
+    },
+    async remove(key) {
+      entries.delete(key);
+    }
   };
 }
 

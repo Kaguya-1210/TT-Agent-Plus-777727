@@ -83,6 +83,47 @@ test('hashSource distinguishes identical entries from different world books', ()
   );
 });
 
+test('cache key includes world-info rule identity and versions in stable order', () => {
+  assert.equal(createCacheKey({
+    scopeId: 'chat-1',
+    sourceHash: 'abc',
+    ruleTemplateId: 'airp-character-default',
+    ruleVersion: 2,
+    worldInfoRuleId: 'world-info-characters',
+    worldInfoRuleVersion: 3,
+    modelProfileId: 'profile-1',
+    promptVersion: 4
+  }), [
+    'chat-1',
+    'abc',
+    'airp-character-default',
+    'rv2',
+    'world-info-characters',
+    'wv3',
+    'profile-1',
+    'pv4'
+  ].join('::'));
+});
+
+test('cache key changes for world-info rule ID or version and keeps legacy defaults stable', () => {
+  const descriptor = {
+    scopeId: 'chat-1',
+    sourceHash: 'abc',
+    ruleTemplateId: 'airp-character-default',
+    ruleVersion: 1,
+    modelProfileId: 'current',
+    promptVersion: 1
+  };
+
+  const legacyFirst = createCacheKey(descriptor);
+  const legacySecond = createCacheKey({ ...descriptor });
+
+  assert.equal(legacyFirst, legacySecond);
+  assert.match(legacyFirst, /::world-info-all::wv1::/);
+  assert.notEqual(legacyFirst, createCacheKey({ ...descriptor, worldInfoRuleId: 'world-info-custom' }));
+  assert.notEqual(legacyFirst, createCacheKey({ ...descriptor, worldInfoRuleVersion: 2 }));
+});
+
 test('cache store saves and marks entries stale', async () => {
   const store = createProcessedCacheStore(createMemoryCacheDriver());
   const key = createCacheKey({

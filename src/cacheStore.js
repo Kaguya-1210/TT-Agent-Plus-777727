@@ -15,12 +15,23 @@ function parseStoredValue(raw) {
   }
 }
 
-export function createCacheKey({ scopeId, sourceHash, ruleTemplateId, ruleVersion, modelProfileId, promptVersion }) {
+export function createCacheKey({
+  scopeId,
+  sourceHash,
+  ruleTemplateId,
+  ruleVersion,
+  worldInfoRuleId,
+  worldInfoRuleVersion,
+  modelProfileId,
+  promptVersion
+}) {
   return [
     scopeId || 'global',
     sourceHash,
     ruleTemplateId,
     `rv${ruleVersion}`,
+    worldInfoRuleId || 'world-info-all',
+    `wv${worldInfoRuleVersion ?? 1}`,
     modelProfileId || 'current',
     `pv${promptVersion}`
   ].join('::');

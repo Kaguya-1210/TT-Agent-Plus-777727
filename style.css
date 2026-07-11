@@ -480,6 +480,7 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
 
 .ttap-world-info-rules,
 .ttap-world-info-editor,
+.ttap-world-info-workspace,
 .ttap-rule-list {
   min-width: 0;
 }
@@ -518,12 +519,41 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
   margin: 0;
 }
 
+.ttap-world-info-workspace {
+  display: grid;
+  gap: 10px;
+  align-items: start;
+}
+
+.ttap-world-info-workspace[data-editing="true"] {
+  grid-template-columns: minmax(160px, 0.62fr) minmax(0, 1.38fr);
+}
+
+.ttap-world-info-workspace[data-editing="true"] .ttap-rule-list {
+  max-height: min(520px, 58dvh);
+  overflow-y: auto;
+}
+
+.ttap-world-info-workspace[data-editing="true"] .ttap-world-info-rule-card {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.ttap-world-info-workspace[data-editing="true"] .ttap-rule-meta {
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+}
+
 .ttap-world-info-rule-card {
   min-height: 68px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 8px;
+}
+
+.ttap-world-info-rule-card.is-active {
+  border-color: var(--ttap-accent-border);
+  background: var(--ttap-accent-soft);
 }
 
 .ttap-rule-summary strong,
@@ -562,6 +592,28 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
   overflow-x: hidden;
 }
 
+.ttap-world-info-context {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.ttap-world-info-context span {
+  min-width: 0;
+  color: var(--ttap-muted);
+  font-size: 11px;
+}
+
+.ttap-world-info-context strong {
+  display: block;
+  margin-top: 2px;
+  color: var(--ttap-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ttap-world-info-editor-fields {
   min-width: 0;
   display: grid;
@@ -569,8 +621,8 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
   gap: 8px;
 }
 
-.ttap-world-info-editor-fields .ttap-status-line {
-  grid-column: 1 / -1;
+.ttap-mode-segmented {
+  margin: 0;
 }
 
 .ttap-entry-toolbar {
@@ -608,6 +660,10 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
   color: var(--ttap-text);
 }
 
+.ttap-warning {
+  color: var(--ttap-warning);
+}
+
 .ttap-entry-list {
   min-width: 0;
   max-height: min(360px, 42dvh);
@@ -619,17 +675,15 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
 }
 
 .ttap-entry-row {
-  height: 56px;
-  min-height: 56px;
+  min-height: 68px;
   min-width: 0;
   box-sizing: border-box;
   padding: 8px 10px;
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 9px;
+  gap: 7px 9px;
   border-bottom: 1px solid var(--ttap-border);
-  cursor: pointer;
 }
 
 .ttap-entry-row:last-child {
@@ -640,6 +694,47 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
   width: 16px;
   height: 16px;
   margin: 0;
+}
+
+.ttap-entry-select {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  cursor: pointer;
+}
+
+.ttap-entry-state {
+  color: var(--ttap-accent);
+  font-size: 11px;
+}
+
+.ttap-entry-row[data-entry-disabled="true"] .ttap-entry-state {
+  color: var(--ttap-muted);
+}
+
+.ttap-entry-row details {
+  grid-column: 1 / -1;
+  min-width: 0;
+  color: var(--ttap-muted);
+  font-size: 11px;
+}
+
+.ttap-entry-row summary {
+  cursor: pointer;
+}
+
+.ttap-entry-row details p {
+  max-height: 140px;
+  margin: 6px 0 0;
+  padding: 7px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--ttap-bg);
+  color: var(--ttap-text);
+  line-height: 1.4;
+  white-space: pre-wrap;
 }
 
 .ttap-editor-actions {
@@ -678,10 +773,19 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
 
   .ttap-world-info-editor,
   .ttap-world-info-editor-fields,
+  .ttap-world-info-context,
   .ttap-entry-toolbar,
   .ttap-world-info-rule-card {
     grid-template-columns: 1fr;
     width: 100%;
+  }
+
+  .ttap-world-info-workspace[data-editing="true"] {
+    grid-template-columns: 1fr;
+  }
+
+  .ttap-world-info-workspace[data-editing="true"] .ttap-rule-list {
+    max-height: 220px;
   }
 
   .ttap-world-info-heading {

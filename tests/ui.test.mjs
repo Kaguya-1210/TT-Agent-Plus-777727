@@ -242,6 +242,106 @@ test('world-info editor reports exclude final allowance from the whole catalog',
   assert.match(renderPanelHtml(state), /最终允许读取 2/);
 });
 
+test('world-info editor counts only catalog selections and disables empty-result actions', () => {
+  const state = createInitialState({
+    panel: { open: true, activeTab: 'rules' },
+    ruleView: 'world-info',
+    worldInfoCatalog: {
+      characterRef: 'character:hero.png',
+      characterName: 'Hero',
+      worldRef: 'named:Lore',
+      worldName: 'Lore',
+      entries: [
+        { uid: '1', displayName: '一', content: 'A' },
+        { uid: '2', displayName: '二', content: 'B' },
+        { uid: '3', displayName: '三', content: 'C' }
+      ]
+    },
+    worldInfoRuleEditor: {
+      view: 'edit',
+      editingId: 'stale-selection',
+      search: 'no-match',
+      draft: {
+        id: 'stale-selection',
+        name: '含失效选择',
+        mode: 'include',
+        worldRef: 'named:Lore',
+        entryUids: ['1', 'missing'],
+        version: 1
+      }
+    }
+  });
+
+  const includeHtml = renderPanelHtml(state);
+  assert.match(includeHtml, /data-world-info-select-all[^>]*disabled/);
+  assert.match(includeHtml, /data-world-info-invert[^>]*disabled/);
+  assert.match(includeHtml, /当前结果已选 0/);
+  assert.match(includeHtml, /全局已选 1/);
+  assert.match(includeHtml, /失效选择 1/);
+  assert.match(includeHtml, /最终允许读取 1/);
+
+  state.worldInfoRuleEditor = {
+    ...state.worldInfoRuleEditor,
+    search: '',
+    draft: { ...state.worldInfoRuleEditor.draft, mode: 'exclude' }
+  };
+  assert.match(renderPanelHtml(state), /最终允许读取 2/);
+});
+
+test('world-info edit view keeps the rule list and renders complete catalog context', () => {
+  const state = createInitialState({
+    panel: { open: true, activeTab: 'rules' },
+    ruleView: 'world-info',
+    settings: {
+      worldInfoRules: [{
+        id: 'custom-rule',
+        name: '自定义规则',
+        mode: 'include',
+        worldRef: 'named:Lore',
+        entryUids: ['1'],
+        version: 1
+      }]
+    },
+    worldInfoCatalog: {
+      characterRef: 'character:hero.png',
+      characterName: 'Hero Name',
+      worldRef: 'named:Lore',
+      worldName: 'Lore Book',
+      entries: [
+        { uid: '1', displayName: '启用条目', content: '完整正文一', disabled: false },
+        { uid: '2', displayName: '禁用条目', content: '完整正文二', disabled: true }
+      ]
+    },
+    worldInfoRuleEditor: {
+      view: 'edit',
+      editingId: 'custom-rule',
+      search: '',
+      draft: {
+        id: 'custom-rule',
+        name: '自定义规则',
+        mode: 'include',
+        worldRef: 'named:Lore',
+        entryUids: ['1'],
+        version: 1
+      }
+    }
+  });
+
+  const html = renderPanelHtml(state);
+  assert.match(html, /ttap-world-info-workspace/);
+  assert.ok(html.indexOf('ttap-rule-list') < html.indexOf('ttap-world-info-editor'));
+  assert.match(html, /自定义规则/);
+  assert.match(html, /Hero Name/);
+  assert.match(html, /Lore Book/);
+  assert.match(html, /data-world-info-rule-mode="include"[^>]*aria-selected="true"/);
+  assert.match(html, /data-world-info-rule-mode="exclude"/);
+  assert.doesNotMatch(html, /<select data-world-info-rule-mode/);
+  assert.match(html, /已启用/);
+  assert.match(html, /已禁用/);
+  assert.match(html, /data-world-info-preview/);
+  assert.match(html, /完整正文一/);
+});
+
 test('world-info rule styles provide stable scrolling rows and a narrow single-column editor', () => {
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
 
@@ -250,7 +350,9 @@ test('world-info rule styles provide stable scrolling rows and a narrow single-c
   assert.match(css, /\.ttap-entry-toolbar\s*{/);
   assert.match(css, /\.ttap-entry-list\s*{[\s\S]*overflow-y:\s*auto/);
   assert.match(css, /\.ttap-entry-row\s*{[\s\S]*min-height:/);
+  assert.match(css, /\.ttap-world-info-workspace\[data-editing="true"\]\s*{[\s\S]*grid-template-columns:[^;]*minmax/);
   assert.match(css, /@media\s*\(max-width:\s*520px\)[\s\S]*\.ttap-world-info-editor[\s\S]*grid-template-columns:\s*1fr/);
+  assert.match(css, /@media\s*\(max-width:\s*520px\)[\s\S]*\.ttap-world-info-workspace\[data-editing="true"\][\s\S]*grid-template-columns:\s*1fr/);
   assert.match(css, /@media\s*\(max-width:\s*520px\)[\s\S]*\.ttap-entry-toolbar[\s\S]*grid-template-columns:\s*1fr/);
 });
 
@@ -545,7 +647,7 @@ test('mountPanel binds world-info rule controls once per event', () => {
     save: makeNode(),
     cancel: makeNode(),
     name: makeNode({}, '新名称'),
-    mode: makeNode({}, 'include')
+    mode: makeNode({ worldInfoRuleMode: 'include' })
   };
   nodes.entry.checked = true;
   const selectors = new Map([
@@ -576,13 +678,17 @@ test('mountPanel binds world-info rule controls once per event', () => {
     onNewWorldInfoRule: () => calls.push(['new']),
     onEditWorldInfoRule: (id) => calls.push(['edit', id]),
     onDeleteWorldInfoRule: (id) => calls.push(['delete', id]),
-    onWorldInfoSearch: (value) => calls.push(['search', value]),
-    onWorldInfoSelectAll: () => calls.push(['select-all']),
-    onWorldInfoInvert: () => calls.push(['invert']),
-    onWorldInfoEntry: (uid, checked) => calls.push(['entry', uid, checked]),
+    onWorldInfoRuleSearch: (value) => calls.push(['search', value]),
+    onWorldInfoRuleSelectAll: () => calls.push(['select-all']),
+    onWorldInfoRuleInvert: () => calls.push(['invert']),
+    onWorldInfoRuleToggleEntry: (uid, checked) => calls.push(['entry', uid, checked]),
     onWorldInfoRuleDraft: (patch) => calls.push(['draft', patch]),
     onSaveWorldInfoRule: () => calls.push(['save']),
-    onCancelWorldInfoRule: () => calls.push(['cancel'])
+    onCancelWorldInfoRule: () => calls.push(['cancel']),
+    onWorldInfoSearch: () => calls.push(['legacy-search']),
+    onWorldInfoSelectAll: () => calls.push(['legacy-select-all']),
+    onWorldInfoInvert: () => calls.push(['legacy-invert']),
+    onWorldInfoEntry: () => calls.push(['legacy-entry'])
   });
 
   for (const key of ['view', 'create', 'edit', 'remove', 'selectAll', 'invert', 'save', 'cancel']) {
@@ -591,7 +697,7 @@ test('mountPanel binds world-info rule controls once per event', () => {
   nodes.search.emit('input');
   nodes.entry.emit('change');
   nodes.name.emit('input');
-  nodes.mode.emit('change');
+  nodes.mode.emit('click');
   nodes.search.emit('change');
   nodes.entry.emit('click');
 
@@ -619,4 +725,126 @@ test('mountPanel binds world-info rule controls once per event', () => {
     ['search', '角色'],
     ['entry', '7', true]
   ]);
+});
+
+test('mountPanel preserves search focus and selection across consecutive input renders', () => {
+  let state = createInitialState({
+    panel: { open: true, activeTab: 'rules' },
+    ruleView: 'world-info',
+    worldInfoCatalog: {
+      characterRef: 'character:hero.png',
+      characterName: 'Hero',
+      worldRef: 'named:Lore',
+      worldName: 'Lore',
+      entries: [{ uid: '1', displayName: '角色', content: 'A' }]
+    },
+    worldInfoRuleEditor: {
+      view: 'edit',
+      editingId: 'rule-1',
+      search: '',
+      draft: { id: 'rule-1', name: '规则', mode: 'include', worldRef: 'named:Lore', entryUids: [] }
+    }
+  });
+  let documentRef;
+  let controls = {};
+  let writes = 0;
+
+  function makeInput(dataset, value) {
+    return {
+      dataset,
+      value,
+      selectionStart: value.length,
+      selectionEnd: value.length,
+      selectionDirection: 'none',
+      listeners: new Map(),
+      addEventListener(event, listener) {
+        this.listeners.set(event, [...(this.listeners.get(event) ?? []), listener]);
+      },
+      focus() {
+        documentRef.activeElement = this;
+      },
+      setSelectionRange(start, end, direction = 'none') {
+        this.selectionStart = start;
+        this.selectionEnd = end;
+        this.selectionDirection = direction;
+      },
+      emit(event) {
+        for (const listener of this.listeners.get(event) ?? []) listener({ currentTarget: this, target: this });
+      }
+    };
+  }
+
+  const root = {
+    _innerHTML: '',
+    set innerHTML(value) {
+      writes += 1;
+      this._innerHTML = String(value);
+      controls = {
+        search: makeInput({ worldInfoSearch: '' }, state.worldInfoRuleEditor.search),
+        name: makeInput({ worldInfoRuleName: '' }, state.worldInfoRuleEditor.draft.name)
+      };
+    },
+    get innerHTML() {
+      return this._innerHTML;
+    },
+    contains(node) {
+      return Object.values(controls).includes(node) || documentRef.activeElement === node;
+    },
+    querySelectorAll(selector) {
+      if (selector === '[data-world-info-search]') return [controls.search];
+      if (selector === '[data-world-info-rule-name]') return [controls.name];
+      return [];
+    },
+    querySelector(selector) {
+      return this.querySelectorAll(selector)[0] ?? null;
+    }
+  };
+  documentRef = { activeElement: null, getElementById: () => root };
+  let mounted;
+  mounted = mountPanel({
+    documentRef,
+    getState: () => state,
+    onWorldInfoRuleSearch(value) {
+      state = {
+        ...state,
+        worldInfoRuleEditor: { ...state.worldInfoRuleEditor, search: value }
+      };
+      mounted.render();
+    },
+    onWorldInfoRuleDraft(patch) {
+      state = {
+        ...state,
+        worldInfoRuleEditor: {
+          ...state.worldInfoRuleEditor,
+          draft: { ...state.worldInfoRuleEditor.draft, ...patch }
+        }
+      };
+    }
+  });
+
+  const firstSearch = controls.search;
+  firstSearch.focus();
+  firstSearch.value = '角';
+  firstSearch.setSelectionRange(1, 1);
+  firstSearch.emit('input');
+  assert.notEqual(controls.search, firstSearch);
+  assert.equal(documentRef.activeElement, controls.search);
+  assert.deepEqual([controls.search.selectionStart, controls.search.selectionEnd], [1, 1]);
+
+  const secondSearch = controls.search;
+  secondSearch.value = '角色';
+  secondSearch.setSelectionRange(2, 2);
+  secondSearch.emit('input');
+  assert.equal(state.worldInfoRuleEditor.search, '角色');
+  assert.equal(documentRef.activeElement, controls.search);
+  assert.deepEqual([controls.search.selectionStart, controls.search.selectionEnd], [2, 2]);
+
+  const writesBeforeName = writes;
+  controls.name.focus();
+  controls.name.value = '规则名称连续输入';
+  controls.name.setSelectionRange(8, 8);
+  controls.name.emit('input');
+  assert.equal(writes, writesBeforeName);
+  assert.equal(documentRef.activeElement, controls.name);
+  assert.deepEqual([controls.name.selectionStart, controls.name.selectionEnd], [8, 8]);
 });

@@ -653,6 +653,40 @@ test('world-info rule CRUD persists normalized immutable settings and migrates d
   assert.ok(saveCalls >= 3);
 });
 
+test('saving a max-version world-info rule wraps to a different valid version', async () => {
+  const context = {
+    extensionSettings: {
+      [SETTINGS_KEY]: {
+        worldInfoRules: [{
+          id: 'max-version-rule',
+          name: '最大版本',
+          mode: 'include',
+          worldRef: 'named:Lore',
+          entryUids: ['1'],
+          version: 999999
+        }]
+      }
+    }
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => context,
+    worldInfoRepository: createCatalogRepository('Lore', {
+      entries: [{ uid: '1', displayName: '角色', content: 'A' }]
+    })
+  });
+  await app.refreshActiveCharacterWorldInfo();
+
+  app.editWorldInfoRule('max-version-rule');
+  app.updateWorldInfoRuleDraft({ name: '回绕版本' });
+  const saved = app.saveWorldInfoRule();
+
+  assert.equal(saved.version, 1);
+  assert.notEqual(saved.version, 999999);
+  assert.equal(context.extensionSettings[SETTINGS_KEY].worldInfoRules
+    .find((rule) => rule.id === 'max-version-rule').version, 1);
+});
+
 test('world-info search selection actions affect only current results', async () => {
   const app = await startTtAgentPlus727(createWindowRef(), {
     autoMount: false,
@@ -674,6 +708,11 @@ test('world-info search selection actions affect only current results', async ()
   assert.deepEqual(app.state.worldInfoRuleEditor.draft.entryUids, ['3', '1', '2']);
   assert.equal(app.invertWorldInfoEntries(), true);
   assert.deepEqual(app.state.worldInfoRuleEditor.draft.entryUids, ['3']);
+
+  app.setWorldInfoSearch('no-match');
+  assert.equal(app.selectAllWorldInfoEntries(), false);
+  assert.equal(app.invertWorldInfoEntries(), false);
+  assert.deepEqual(app.state.worldInfoRuleEditor.draft.entryUids, ['3']);
 });
 
 test('new world-info rules are unavailable without an active character book', async () => {
@@ -686,6 +725,22 @@ test('new world-info rules are unavailable without an active character book', as
 
   assert.equal(app.newWorldInfoRule(), false);
   assert.equal(app.state.worldInfoRuleEditor.view, 'list');
+});
+
+test('updating only a world-info rule name does not rerender the mounted panel', async () => {
+  const root = createPanelRoot();
+  const app = await startTtAgentPlus727(createWindowRef({ document: createAutoMountDocument(root) }), {
+    getContext: () => ({ extensionSettings: {} }),
+    worldInfoRepository: createCatalogRepository('Lore')
+  });
+  await app.refreshActiveCharacterWorldInfo();
+  app.newWorldInfoRule();
+  const rendersBeforeName = root.renderCount;
+
+  app.updateWorldInfoRuleDraft({ name: '连续输入名称' });
+
+  assert.equal(app.state.worldInfoRuleEditor.draft.name, '连续输入名称');
+  assert.equal(root.renderCount, rendersBeforeName);
 });
 
 test('dispatchCapturedWorldInfo filters the active character main book before batching', async () => {
@@ -2339,6 +2394,39 @@ test('openPanel rules exposes a readable catalog refresh error state', async () 
   assert.equal(app.state.worldInfoCatalogStatus.loading, false);
   assert.match(app.state.worldInfoCatalogStatus.error, /读取当前角色世界书失败/);
   assert.match(root.innerHTML, /读取当前角色世界书失败/);
+});
+
+test('a failed catalog refresh clears stale character identity and disables creation', async () => {
+  let shouldFail = false;
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => ({ extensionSettings: {} }),
+    worldInfoRepository: {
+      async readActive() {
+        if (shouldFail) throw new Error('new character read failed');
+        return createWorldInfoCatalog('OldLore', {
+          characterRef: 'character:old.png',
+          worldRef: 'named:OldLore',
+          entries: [{ uid: '1', displayName: '旧条目', content: 'OLD' }]
+        });
+      }
+    }
+  });
+  await app.refreshActiveCharacterWorldInfo();
+  assert.equal(app.state.worldInfoCatalog.worldRef, 'named:OldLore');
+  shouldFail = true;
+
+  await app.refreshActiveCharacterWorldInfo();
+
+  assert.deepEqual(app.state.worldInfoCatalog, {
+    characterRef: '',
+    characterName: '',
+    worldRef: '',
+    worldName: '',
+    entries: []
+  });
+  assert.match(app.state.worldInfoCatalogStatus.error, /读取当前角色世界书失败/);
+  assert.equal(app.newWorldInfoRule(), false);
 });
 
 test('refreshPromptInjection clears prompt when cache list fails', async () => {

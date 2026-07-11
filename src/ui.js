@@ -45,10 +45,10 @@ export function mountPanel(options = {}) {
     onNewWorldInfoRule,
     onEditWorldInfoRule,
     onDeleteWorldInfoRule,
-    onWorldInfoSearch,
-    onWorldInfoSelectAll,
-    onWorldInfoInvert,
-    onWorldInfoEntry,
+    onWorldInfoRuleSearch,
+    onWorldInfoRuleSelectAll,
+    onWorldInfoRuleInvert,
+    onWorldInfoRuleToggleEntry,
     onWorldInfoRuleDraft,
     onSaveWorldInfoRule,
     onCancelWorldInfoRule,
@@ -92,6 +92,7 @@ export function mountPanel(options = {}) {
   const inputBindings = new WeakMap();
 
   function render() {
+    const focusSnapshot = capturePanelFocus(documentRef, root);
     try {
       root.innerHTML = renderPanelHtml(safeGet(getState, undefined, debug), safeGet(getDebugEntries, [], debug));
     } catch (error) {
@@ -102,6 +103,7 @@ export function mountPanel(options = {}) {
     if (typeof root.querySelectorAll !== 'function' || typeof root.querySelector !== 'function') {
       return false;
     }
+    restorePanelFocus(root, focusSnapshot, debug);
 
     let bound = true;
     bound = bindEach(root, '[data-tab]', (button) => () => {
@@ -138,10 +140,10 @@ export function mountPanel(options = {}) {
       safeInvoke(onDeleteWorldInfoRule, debug, safeDataset(button).deleteWorldInfoRule);
     }, debug) && bound;
     bound = bindEach(root, '[data-world-info-select-all]', () => () => {
-      safeInvoke(onWorldInfoSelectAll, debug);
+      safeInvoke(onWorldInfoRuleSelectAll, debug);
     }, debug) && bound;
     bound = bindEach(root, '[data-world-info-invert]', () => () => {
-      safeInvoke(onWorldInfoInvert, debug);
+      safeInvoke(onWorldInfoRuleInvert, debug);
     }, debug) && bound;
     bound = bindEach(root, '[data-save-world-info-rule]', () => () => {
       safeInvoke(onSaveWorldInfoRule, debug);
@@ -150,17 +152,17 @@ export function mountPanel(options = {}) {
       safeInvoke(onCancelWorldInfoRule, debug);
     }, debug) && bound;
     bound = bindInputEach(root, '[data-world-info-search]', 'input', (input) => () => {
-      safeInvoke(onWorldInfoSearch, debug, readNodeValue(input));
+      safeInvoke(onWorldInfoRuleSearch, debug, readNodeValue(input));
     }, inputBindings, debug) && bound;
     bound = bindInputEach(root, '[data-world-info-entry]', 'change', (input) => () => {
-      safeInvoke(onWorldInfoEntry, debug, safeDataset(input).worldInfoEntry, input?.checked === true);
+      safeInvoke(onWorldInfoRuleToggleEntry, debug, safeDataset(input).worldInfoEntry, input?.checked === true);
     }, inputBindings, debug) && bound;
     bound = bindInputEach(root, '[data-world-info-rule-name]', 'input', (input) => () => {
       safeInvoke(onWorldInfoRuleDraft, debug, { name: readNodeValue(input) });
     }, inputBindings, debug) && bound;
-    bound = bindInputEach(root, '[data-world-info-rule-mode]', 'change', (input) => () => {
-      safeInvoke(onWorldInfoRuleDraft, debug, { mode: readNodeValue(input) });
-    }, inputBindings, debug) && bound;
+    bound = bindEach(root, '[data-world-info-rule-mode]', (button) => () => {
+      safeInvoke(onWorldInfoRuleDraft, debug, { mode: safeDataset(button).worldInfoRuleMode });
+    }, debug) && bound;
 
     return bound;
   }
@@ -348,13 +350,10 @@ function renderWorldInfoRules(state) {
     ? `<p class="ttap-error ttap-world-info-status">${escapeHtml(status.error)}</p>`
     : (status.loading ? '<p class="ttap-status-line ttap-world-info-status">正在读取当前角色世界书...</p>' : '');
 
-  if (editor.view === 'edit' && isRecord(editor.draft) && hasWorld) {
-    return statusHtml + renderWorldInfoRuleEditor(editor, catalog);
-  }
-
   const rules = records(state.settings?.worldInfoRules);
+  const editing = editor.view === 'edit' && isRecord(editor.draft) && hasWorld;
   const rows = rules.length
-    ? rules.map((rule) => renderWorldInfoRuleCard(rule, catalog)).join('')
+    ? rules.map((rule) => renderWorldInfoRuleCard(rule, catalog, editing ? editor.editingId : null)).join('')
     : '<p class="ttap-empty">还没有世界书处理规则。</p>';
   const empty = hasWorld ? '' : '<p class="ttap-empty ttap-world-info-empty">当前角色未绑定世界书</p>';
 
@@ -368,12 +367,15 @@ function renderWorldInfoRules(state) {
     '</div>',
     statusHtml,
     empty,
+    `<div class="ttap-world-info-workspace" data-editing="${editing}">`,
     `<div class="ttap-rule-list">${rows}</div>`,
+    editing ? renderWorldInfoRuleEditor(editor, catalog) : '',
+    '</div>',
     '</section>'
   ].join('');
 }
 
-function renderWorldInfoRuleCard(rule, catalog) {
+function renderWorldInfoRuleCard(rule, catalog, editingId) {
   const id = escapeHtml(rule.id);
   const selected = recordsAsValues(rule.entryUids).length;
   const mode = rule.mode === 'include' ? '包含' : '排除';
@@ -388,7 +390,7 @@ function renderWorldInfoRuleCard(rule, catalog) {
   ].join('');
 
   return [
-    '<article class="ttap-card ttap-world-info-rule-card">',
+    `<article class="ttap-card ttap-world-info-rule-card${rule.id === editingId ? ' is-active' : ''}">`,
     '<div class="ttap-rule-summary">',
     `<strong>${escapeHtml(rule.name)}</strong>`,
     `<span>${escapeHtml(worldName)}</span>`,
@@ -407,35 +409,43 @@ function renderWorldInfoRuleEditor(editor, catalog) {
   const entries = records(catalog.entries);
   const visibleEntries = filterCatalogEntries(entries, editor.search);
   const selectedUids = recordsAsValues(draft.entryUids);
-  const selected = new Set(selectedUids);
+  const catalogUids = new Set(entries.map((entry) => normalizeUid(entry.uid)).filter(Boolean));
+  const validSelectedUids = selectedUids.filter((uid) => catalogUids.has(uid));
+  const invalidSelectedCount = selectedUids.length - validSelectedUids.length;
+  const selected = new Set(validSelectedUids);
   const visibleSelected = visibleEntries.reduce((count, entry) => (
     selected.has(normalizeUid(entry.uid)) ? count + 1 : count
   ), 0);
   const finalAllowed = draft.mode === 'include'
-    ? selectedUids.length
-    : Math.max(0, entries.length - selectedUids.length);
+    ? validSelectedUids.length
+    : Math.max(0, entries.length - validSelectedUids.length);
+  const disabledActions = visibleEntries.length ? '' : ' disabled';
   const entryRows = visibleEntries.length
     ? visibleEntries.map((entry) => renderWorldInfoEntry(entry, selected)).join('')
     : '<p class="ttap-empty">当前搜索没有匹配条目。</p>';
 
   return [
     '<section class="ttap-world-info-editor">',
+    '<div class="ttap-world-info-context">',
+    `<span>当前角色<strong>${escapeHtml(catalog.characterName || '未命名角色')}</strong></span>`,
+    `<span>绑定世界书<strong>${escapeHtml(catalog.worldName)}</strong></span>`,
+    '</div>',
     '<div class="ttap-world-info-editor-fields">',
     `<label class="ttap-field"><span>规则名称</span><input type="text" data-world-info-rule-name value="${escapeHtml(draft.name)}"></label>`,
-    '<label class="ttap-field"><span>处理模式</span><select data-world-info-rule-mode>',
-    `<option value="include"${draft.mode === 'include' ? ' selected' : ''}>包含选中条目</option>`,
-    `<option value="exclude"${draft.mode === 'include' ? '' : ' selected'}>排除选中条目</option>`,
-    '</select></label>',
-    `<span class="ttap-status-line">绑定世界书：${escapeHtml(catalog.worldName)}</span>`,
+    '<div class="ttap-field"><span>处理模式</span><div class="ttap-segmented ttap-mode-segmented" role="group" aria-label="处理模式">',
+    `<button type="button" data-world-info-rule-mode="include" aria-selected="${draft.mode === 'include'}">包含</button>`,
+    `<button type="button" data-world-info-rule-mode="exclude" aria-selected="${draft.mode !== 'include'}">排除</button>`,
+    '</div></div>',
     '</div>',
     '<div class="ttap-entry-toolbar">',
     `<input type="search" data-world-info-search value="${escapeHtml(editor.search)}" placeholder="搜索名称、UID 或正文">`,
-    '<button type="button" data-world-info-select-all>全选当前结果</button>',
-    '<button type="button" data-world-info-invert>反选当前结果</button>',
+    `<button type="button" data-world-info-select-all${disabledActions}>全选当前结果</button>`,
+    `<button type="button" data-world-info-invert${disabledActions}>反选当前结果</button>`,
     '</div>',
     '<div class="ttap-world-info-stats">',
     `<span>当前结果已选 ${visibleSelected}</span>`,
-    `<span>全局已选 ${selectedUids.length}</span>`,
+    `<span>全局已选 ${validSelectedUids.length}</span>`,
+    `<span class="${invalidSelectedCount ? 'ttap-warning' : 'ttap-status-line'}">失效选择 ${invalidSelectedCount}</span>`,
     `<strong>最终允许读取 ${finalAllowed}</strong>`,
     '</div>',
     `<div class="ttap-entry-list">${entryRows}</div>`,
@@ -450,14 +460,18 @@ function renderWorldInfoRuleEditor(editor, catalog) {
 function renderWorldInfoEntry(entry, selected) {
   const uid = normalizeUid(entry.uid);
   const checked = selected.has(uid) ? ' checked' : '';
+  const status = entry.disabled === true ? '已禁用' : '已启用';
+  const content = toText(entry.content);
+  const preview = content.length > 600 ? `${content.slice(0, 600)}...` : content;
   return [
-    '<label class="ttap-entry-row">',
+    `<div class="ttap-entry-row" data-entry-disabled="${entry.disabled === true}">`,
+    '<label class="ttap-entry-select">',
     `<input type="checkbox" data-world-info-entry="${escapeHtml(uid)}"${checked}>`,
-    '<span class="ttap-entry-copy">',
-    `<strong>${escapeHtml(entry.displayName || '未命名条目')}</strong>`,
-    `<small>UID ${escapeHtml(uid)} · ${escapeHtml(toText(entry.content).slice(0, 120))}</small>`,
-    '</span>',
-    '</label>'
+    `<span class="ttap-entry-copy"><strong>${escapeHtml(entry.displayName || '未命名条目')}</strong><small>UID ${escapeHtml(uid)}</small></span>`,
+    '</label>',
+    `<span class="ttap-entry-state">${status}</span>`,
+    `<details data-world-info-preview><summary>正文预览</summary><p>${escapeHtml(preview || '无正文')}</p></details>`,
+    '</div>'
   ].join('');
 }
 
@@ -589,6 +603,42 @@ function bindInputEach(root, selector, eventName, listenerFor, bindings, debug) 
     }
   }
   return true;
+}
+
+function capturePanelFocus(documentRef, root) {
+  try {
+    const active = documentRef?.activeElement;
+    if (!active || (typeof root?.contains === 'function' && !root.contains(active))) return null;
+    const dataset = safeDataset(active);
+    const selector = Object.hasOwn(dataset, 'worldInfoSearch')
+      ? '[data-world-info-search]'
+      : (Object.hasOwn(dataset, 'worldInfoRuleName') ? '[data-world-info-rule-name]' : '');
+    if (!selector) return null;
+    return {
+      selector,
+      start: Number.isInteger(active.selectionStart) ? active.selectionStart : null,
+      end: Number.isInteger(active.selectionEnd) ? active.selectionEnd : null,
+      direction: typeof active.selectionDirection === 'string' ? active.selectionDirection : 'none'
+    };
+  } catch {
+    return null;
+  }
+}
+
+function restorePanelFocus(root, snapshot, debug) {
+  if (!snapshot) return false;
+  try {
+    const control = root.querySelector(snapshot.selector);
+    if (!control || typeof control.focus !== 'function') return false;
+    control.focus();
+    if (snapshot.start !== null && snapshot.end !== null && typeof control.setSelectionRange === 'function') {
+      control.setSelectionRange(snapshot.start, snapshot.end, snapshot.direction);
+    }
+    return true;
+  } catch (error) {
+    warnDebug(debug, 'Unable to restore panel input focus', error);
+    return false;
+  }
 }
 
 function readManualDispatchPayload(root) {

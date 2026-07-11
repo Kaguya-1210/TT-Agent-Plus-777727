@@ -291,8 +291,10 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     const editor = state.worldInfoRuleEditor;
     if (editor?.view !== 'edit' || !editor.draft || !patch || typeof patch !== 'object') return false;
     const nextPatch = {};
-    if (Object.hasOwn(patch, 'name')) nextPatch.name = typeof patch.name === 'string' ? patch.name : '';
-    if (Object.hasOwn(patch, 'mode')) nextPatch.mode = patch.mode === 'include' ? 'include' : 'exclude';
+    const updatesName = Object.hasOwn(patch, 'name');
+    const updatesMode = Object.hasOwn(patch, 'mode');
+    if (updatesName) nextPatch.name = typeof patch.name === 'string' ? patch.name : '';
+    if (updatesMode) nextPatch.mode = patch.mode === 'include' ? 'include' : 'exclude';
     state = {
       ...state,
       worldInfoRuleEditor: {
@@ -300,7 +302,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
         draft: { ...editor.draft, ...nextPatch }
       }
     };
-    render();
+    if (updatesMode) render();
     return true;
   }
 
@@ -330,6 +332,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     const editor = state.worldInfoRuleEditor;
     if (editor?.view !== 'edit' || !editor.draft) return false;
     const visible = filterCatalogEntries(state.worldInfoCatalog?.entries, editor.search);
+    if (!visible.length) return false;
     const entryUids = selectionAction(editor.draft.entryUids, visible);
     state = {
       ...state,
@@ -369,7 +372,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     if (!ruleId) return null;
     const existingIndex = state.settings.worldInfoRules.findIndex((rule) => rule?.id === ruleId);
     const existing = existingIndex >= 0 ? state.settings.worldInfoRules[existingIndex] : null;
-    const version = Math.min(999999, (Number.isInteger(existing?.version) ? existing.version : 0) + 1);
+    const version = nextWorldInfoRuleVersion(existing?.version);
     const normalized = normalizeWorldInfoRule({
       ...editor.draft,
       id: ruleId,
@@ -432,6 +435,11 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
 
   function emptyWorldInfoRuleEditor() {
     return { view: 'list', editingId: null, search: '', draft: null };
+  }
+
+  function nextWorldInfoRuleVersion(currentVersion) {
+    if (!Number.isInteger(currentVersion) || currentVersion < 1) return 1;
+    return currentVersion >= 999999 ? 1 : currentVersion + 1;
   }
 
   async function refreshPromptInjection(options = {}) {
@@ -565,7 +573,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     if (current) {
       state = {
         ...state,
-        ...(succeeded ? { worldInfoCatalog: cloneValue(catalog) } : {}),
+        worldInfoCatalog: cloneValue(catalog),
         worldInfoCatalogStatus: {
           loading: false,
           error: succeeded ? '' : `读取当前角色世界书失败：${safeErrorMessage(readError)}`
@@ -1068,10 +1076,10 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
         onNewWorldInfoRule: newWorldInfoRule,
         onEditWorldInfoRule: editWorldInfoRule,
         onDeleteWorldInfoRule: deleteWorldInfoRule,
-        onWorldInfoSearch: setWorldInfoSearch,
-        onWorldInfoSelectAll: selectAllWorldInfoEntries,
-        onWorldInfoInvert: invertWorldInfoEntries,
-        onWorldInfoEntry: toggleWorldInfoEntry,
+        onWorldInfoRuleSearch: setWorldInfoSearch,
+        onWorldInfoRuleSelectAll: selectAllWorldInfoEntries,
+        onWorldInfoRuleInvert: invertWorldInfoEntries,
+        onWorldInfoRuleToggleEntry: toggleWorldInfoEntry,
         onWorldInfoRuleDraft: updateWorldInfoRuleDraft,
         onSaveWorldInfoRule: saveWorldInfoRule,
         onCancelWorldInfoRule: cancelWorldInfoRule,

@@ -1572,6 +1572,71 @@ test('a pending scan replaces the old capture and cannot dispatch until identity
   assert.doesNotMatch(JSON.stringify(app.state.tasks), /OLD-CAPTURE-BODY/);
 });
 
+test('a pending scan clears stale world prompt before identity binding completes', async () => {
+  const prompts = [];
+  const eventSource = createEventSource();
+  const pendingIdentity = createDeferred();
+  let readCount = 0;
+  const oldCatalog = createWorldInfoCatalog('Shared', {
+    characterRef: 'character:old-prompt.png',
+    worldRef: 'embedded:character:old-prompt.png',
+    entries: [{ uid: '1' }]
+  });
+  const newCatalog = createWorldInfoCatalog('Shared', {
+    characterRef: 'character:new-prompt.png',
+    worldRef: 'embedded:character:new-prompt.png',
+    entries: [{ uid: '2' }]
+  });
+  const worldInfoRepository = {
+    async readActive() {
+      readCount += 1;
+      if (readCount <= 2) return structuredClone(oldCatalog);
+      if (readCount === 3) return pendingIdentity.promise;
+      return structuredClone(newCatalog);
+    }
+  };
+  const context = {
+    chatId: 'chat-pending-prompt-clear',
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt: (...args) => prompts.push(args)
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    worldInfoRepository,
+    getContext: () => context,
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Shared.1', { uid: 1, content: 'OLD-WORLD-PROMPT', disable: false }]
+  ]));
+  await app.dispatchCapturedWorldInfo();
+  await app.dispatchManualSource({ content: 'MANUAL-PROMPT-STAYS' });
+  assert.match(prompts.at(-1)[1], /OLD-WORLD-PROMPT/);
+  assert.match(prompts.at(-1)[1], /MANUAL-PROMPT-STAYS/);
+
+  const pendingScan = eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Shared.2', { uid: 2, content: 'NEW-WORLD-PROMPT', disable: false }]
+  ]));
+  await waitForMicrotasks();
+
+  assert.equal(readCount, 3);
+  assert.equal(app.state.worldInfoCapture.identityReady, false);
+  assert.doesNotMatch(prompts.at(-1)[1], /OLD-WORLD-PROMPT/);
+  assert.match(prompts.at(-1)[1], /MANUAL-PROMPT-STAYS/);
+  assert.equal(app.state.lastInjection.matchedSources, 0);
+
+  pendingIdentity.resolve(structuredClone(newCatalog));
+  await pendingScan;
+  assert.equal(app.state.worldInfoCapture.identityReady, true);
+  assert.equal(app.state.worldInfoCapture.characterRef, 'character:new-prompt.png');
+  const dispatch = await app.dispatchCapturedWorldInfo();
+  assert.equal(dispatch.staleCapture, false);
+  assert.equal(dispatch.enqueued, 1);
+  assert.match(JSON.stringify(app.state.tasks), /NEW-WORLD-PROMPT/);
+});
+
 test('destroy during scan catalog binding prevents capture and render writes', async () => {
   const eventSource = createEventSource();
   const pendingRead = createDeferred();

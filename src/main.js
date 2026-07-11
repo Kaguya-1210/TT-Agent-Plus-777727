@@ -220,6 +220,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
   async function refreshPromptInjection(options = {}) {
     if (destroyed) return '';
     const requestedOptions = options && typeof options === 'object' ? options : {};
+    if (!isPendingWorldInfoScanRefreshCurrent(requestedOptions)) return '';
     const effectiveOptions = resolvePromptRefreshOptions(requestedOptions);
     const worldInfoContextCurrent = isPromptRefreshContextCurrent(effectiveOptions);
     if (hasExplicitWorldInfoRefreshContext(requestedOptions) && !worldInfoContextCurrent) return '';
@@ -680,7 +681,13 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     render();
 
     const refreshGenerationAtStart = worldInfoRefreshSequence;
-    const catalogRead = await loadWorldInfoCatalogForScan();
+    const catalogReadPromise = loadWorldInfoCatalogForScan();
+    await refreshPromptInjection({
+      activeSourceRefs: [],
+      scopeId: capture.scopeId,
+      pendingWorldInfoScanSequence: scanSequence
+    });
+    const catalogRead = await catalogReadPromise;
     if (!isWorldInfoScanBindingCurrent(scanSequence)) {
       return;
     }
@@ -1125,8 +1132,20 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     return Boolean(
       !destroyed
       && currentRefresh
+      && isPendingWorldInfoScanRefreshCurrent(options)
       && (!requireWorldInfoContext || isPromptRefreshContextCurrent(options))
     );
+  }
+
+  function isPendingWorldInfoScanRefreshCurrent(options = {}) {
+    const pendingScanSequence = options?.pendingWorldInfoScanSequence;
+    return !Number.isInteger(pendingScanSequence)
+      || (
+        !destroyed
+        && pendingScanSequence === worldInfoScanSequence
+        && state.worldInfoCapture?.scanSequence === pendingScanSequence
+        && state.worldInfoCapture?.identityReady === false
+      );
   }
 
   function isDispatchCaptureReady(capture, captureSequence, scopeId) {

@@ -87,30 +87,22 @@ test('sidebar renders safe labels for all supported themes and unknown values', 
   }
 });
 
-test('fullscreen shell escapes projected tab ids and labels', () => {
-  const unsafeId = 'overview" autofocus onfocus="unsafe';
-  const unsafeLabel = '<img src=x onerror=alert(1)>';
-  const state = createInitialState({
-    panel: { open: true, activeTab: unsafeId },
-    tabs: [{ id: unsafeId, label: unsafeLabel }]
-  });
-  const html = renderPanelHtml(state);
-
-  assert.doesNotMatch(html, /data-tab="overview" autofocus/);
-  assert.doesNotMatch(html, /<img src=x onerror=alert\(1\)>/);
-  assert.match(html, /data-tab="overview&quot; autofocus onfocus=&quot;unsafe"/);
-  assert.match(html, /<h1 data-workspace-title>&lt;img src=x onerror=alert\(1\)&gt;<\/h1>/);
-});
-
-test('malformed tab ids use a safe fallback icon', () => {
+test('malformed tabs cannot replace canonical navigation or split the active workspace', () => {
   const html = renderPanelHtml({
     panel: { open: true, activeTab: 'constructor' },
     tabs: [{ id: 'constructor', label: '异常标签' }],
     settings: { theme: 'system' }
   });
 
-  assert.match(html, /class="ttap-tab-icon fa-solid fa-gauge-high"/);
-  assert.doesNotMatch(html, /function Object/);
+  assert.equal((html.match(/class="ttap-tab"/g) ?? []).length, 6);
+  for (const tab of PANEL_TABS) {
+    const selected = tab.id === 'overview' ? 'true' : 'false';
+    assert.match(html, new RegExp(`<button class="ttap-tab" data-tab="${tab.id}"[^>]*aria-selected="${selected}"><i[^>]*></i><span>${tab.label}</span></button>`));
+  }
+  assert.match(html, /<h1 data-workspace-title>总览<\/h1>/);
+  assert.match(html, /class="ttap-overview-hero"/);
+  assert.match(html, /运行状态/);
+  assert.doesNotMatch(html, /constructor|异常标签/);
 });
 
 test('debug tab renders export button when active', () => {

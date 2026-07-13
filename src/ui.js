@@ -9,15 +9,14 @@ const TAB_ICONS = Object.freeze({
   debug: 'fa-bug',
   settings: 'fa-gear'
 });
+const PANEL_TAB_IDS = new Set(PANEL_TABS.map((tab) => tab.id));
 
 export function renderPanelHtml(state, debugEntries = []) {
   const safeState = normalizeState(state);
   const safeDebugEntries = records(debugEntries);
-  const tabButtons = safeState.tabs.map((tab) => {
-    const tabId = toText(tab.id);
-    const active = tabId === safeState.panel.activeTab ? ' aria-selected="true"' : ' aria-selected="false"';
-    const icon = Object.hasOwn(TAB_ICONS, tabId) ? TAB_ICONS[tabId] : TAB_ICONS.overview;
-    return `<button class="ttap-tab" data-tab="${escapeHtml(tabId)}" type="button" role="tab"${active}><i class="ttap-tab-icon fa-solid ${icon}" aria-hidden="true"></i><span>${escapeHtml(tab.label)}</span></button>`;
+  const tabButtons = PANEL_TABS.map((tab) => {
+    const active = tab.id === safeState.panel.activeTab ? ' aria-selected="true"' : ' aria-selected="false"';
+    return `<button class="ttap-tab" data-tab="${escapeHtml(tab.id)}" type="button" role="tab"${active}><i class="ttap-tab-icon fa-solid ${TAB_ICONS[tab.id]}" aria-hidden="true"></i><span>${escapeHtml(tab.label)}</span></button>`;
   }).join('');
   const hiddenAttr = safeState.panel.open ? '' : ' hidden';
   const theme = normalizeTheme(safeState.settings.theme);
@@ -35,15 +34,15 @@ export function renderPanelHtml(state, debugEntries = []) {
     '<button class="ttap-icon-button ttap-desktop-close" type="button" data-ttap-close aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>',
     '</footer>',
     '<header class="ttap-workspace-header">',
-    `<span class="ttap-section-label">工作区</span><h1 data-workspace-title>${escapeHtml(activeTabLabel(safeState))}</h1>`,
+    `<span class="ttap-section-label">工作区</span><h1 data-workspace-title>${escapeHtml(activeTabLabel(safeState.panel.activeTab))}</h1>`,
     '</header>',
     `<section class="ttap-body" data-workspace-body>${renderActiveTab(safeState, safeDebugEntries)}</section>`,
     '</aside>'
   ].join('');
 }
 
-function activeTabLabel(state) {
-  return state.tabs.find((tab) => tab.id === state.panel.activeTab)?.label ?? '总览';
+function activeTabLabel(activeTab) {
+  return PANEL_TABS.find((tab) => tab.id === activeTab)?.label ?? '总览';
 }
 
 function themeLabel(theme) {
@@ -551,14 +550,12 @@ function normalizeState(state) {
   const source = isRecord(state) ? state : {};
   const panel = isRecord(source.panel) ? source.panel : {};
   const settings = isRecord(source.settings) ? source.settings : {};
-  const tabs = records(source.tabs, PANEL_TABS);
 
   return {
     panel: {
       open: panel.open === true,
-      activeTab: typeof panel.activeTab === 'string' ? panel.activeTab : 'overview'
+      activeTab: PANEL_TAB_IDS.has(panel.activeTab) ? panel.activeTab : 'overview'
     },
-    tabs,
     tasks: records(source.tasks),
     cacheEntries: records(source.cacheEntries),
     worldInfoCapture: isRecord(source.worldInfoCapture) ? source.worldInfoCapture : null,

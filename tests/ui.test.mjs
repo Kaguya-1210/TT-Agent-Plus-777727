@@ -128,6 +128,31 @@ test('panel navigation is isolated from post-load PANEL_TABS entry mutations', (
   }
 });
 
+test('panel navigation is isolated from pre-load PANEL_TABS entry mutations', async () => {
+  const firstTab = PANEL_TABS[0];
+  const originalId = firstTab.id;
+  const originalLabel = firstTab.label;
+
+  try {
+    firstTab.id = 'preload-mutated-overview';
+    firstTab.label = '加载前篡改总览';
+    const freshUiUrl = new URL('../src/ui.js?preload-canonical-tabs', import.meta.url);
+    const { renderPanelHtml: renderFreshPanelHtml } = await import(freshUiUrl.href);
+    const html = renderFreshPanelHtml(createInitialState({
+      panel: { open: true, activeTab: 'overview' }
+    }));
+
+    assert.equal((html.match(/class="ttap-tab"/g) ?? []).length, 6);
+    assert.match(html, /<button class="ttap-tab" data-tab="overview"[^>]*aria-selected="true"><i class="ttap-tab-icon fa-solid fa-gauge-high"[^>]*><\/i><span>总览<\/span><\/button>/);
+    assert.match(html, /<h1 data-workspace-title>总览<\/h1>/);
+    assert.match(html, /class="ttap-overview-hero"/);
+    assert.doesNotMatch(html, /preload-mutated-overview|加载前篡改总览/);
+  } finally {
+    firstTab.id = originalId;
+    firstTab.label = originalLabel;
+  }
+});
+
 test('activeTab accessor is read once for selected tab title and body', () => {
   let reads = 0;
   const html = renderPanelHtml({

@@ -1,19 +1,14 @@
-import { DISPLAY_NAME, PANEL_TABS } from './constants.js';
+import { DISPLAY_NAME } from './constants.js';
 import { filterCatalogEntries } from './worldInfoRuleEditor.js';
 
-const TAB_ICON_BY_ID = new Map([
-  ['overview', 'fa-gauge-high'],
-  ['tasks', 'fa-list-check'],
-  ['rules', 'fa-wand-magic-sparkles'],
-  ['cache', 'fa-box-archive'],
-  ['debug', 'fa-bug'],
-  ['settings', 'fa-gear']
+const CANONICAL_TABS = Object.freeze([
+  Object.freeze({ id: 'overview', label: '总览', icon: 'fa-gauge-high' }),
+  Object.freeze({ id: 'tasks', label: '任务', icon: 'fa-list-check' }),
+  Object.freeze({ id: 'rules', label: '规则', icon: 'fa-wand-magic-sparkles' }),
+  Object.freeze({ id: 'cache', label: '缓存', icon: 'fa-box-archive' }),
+  Object.freeze({ id: 'debug', label: '调试', icon: 'fa-bug' }),
+  Object.freeze({ id: 'settings', label: '设置', icon: 'fa-gear' })
 ]);
-const CANONICAL_TABS = Object.freeze(PANEL_TABS.map((tab) => Object.freeze({
-  id: tab.id,
-  label: tab.label,
-  icon: TAB_ICON_BY_ID.get(tab.id)
-})));
 const DEFAULT_TAB = CANONICAL_TABS.find((tab) => tab.id === 'overview') ?? CANONICAL_TABS[0];
 
 export function renderPanelHtml(state, debugEntries = []) {

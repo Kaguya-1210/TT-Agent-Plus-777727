@@ -23,6 +23,96 @@ test('constants and initial state use Chinese tab labels', () => {
   assert.deepEqual(createInitialState().tabs.map((tab) => tab.label), labels);
 });
 
+test('panel renders one semantic fullscreen application shell', () => {
+  const html = renderPanelHtml(createInitialState({
+    panel: { open: true, activeTab: 'rules', badge: null }
+  }));
+
+  assert.equal((html.match(/class="ttap-panel"/g) ?? []).length, 1);
+  assert.match(html, /<aside class="ttap-panel"[^>]*><header class="ttap-header">[\s\S]*?<\/header><nav class="ttap-tabs"[^>]*role="tablist"[^>]*aria-label="主导航">[\s\S]*?<\/nav><footer class="ttap-sidebar-footer">[\s\S]*?<\/footer><header class="ttap-workspace-header">[\s\S]*?<\/header><section class="ttap-body" data-workspace-body>/);
+  assert.match(html, /<span class="ttap-section-label">工作区<\/span><h1 data-workspace-title>规则<\/h1>/);
+  assert.equal((html.match(/class="ttap-tabs"/g) ?? []).length, 1);
+});
+
+test('all main tabs render icons and retain their Chinese labels', () => {
+  const html = renderPanelHtml(createInitialState({ panel: { open: true } }));
+  const expectedTabs = [
+    ['overview', 'fa-gauge-high', '总览'],
+    ['tasks', 'fa-list-check', '任务'],
+    ['rules', 'fa-wand-magic-sparkles', '规则'],
+    ['cache', 'fa-box-archive', '缓存'],
+    ['debug', 'fa-bug', '调试'],
+    ['settings', 'fa-gear', '设置']
+  ];
+
+  for (const [id, icon, label] of expectedTabs) {
+    assert.match(html, new RegExp(`<button class="ttap-tab" data-tab="${id}" type="button" role="tab" aria-selected="(?:true|false)"><i class="ttap-tab-icon fa-solid ${icon}"[^>]*></i><span>${label}</span></button>`));
+  }
+  assert.equal((html.match(/class="ttap-tab-icon fa-solid/g) ?? []).length, 6);
+});
+
+test('desktop and mobile close controls share the existing close callback marker', () => {
+  const openHtml = renderPanelHtml(createInitialState({ panel: { open: true } }));
+  const closedHtml = renderPanelHtml(createInitialState({ panel: { open: false } }));
+
+  assert.equal((openHtml.match(/data-ttap-close/g) ?? []).length, 3);
+  assert.match(openHtml, /class="ttap-icon-button ttap-mobile-close"[^>]*data-ttap-close/);
+  assert.match(openHtml, /class="ttap-icon-button ttap-desktop-close"[^>]*data-ttap-close/);
+  assert.match(closedHtml, /class="ttap-backdrop" data-ttap-close hidden/);
+});
+
+test('workspace title falls back to overview for an invalid active tab', () => {
+  const html = renderPanelHtml({
+    panel: { open: true, activeTab: 'missing' },
+    tabs: [{ id: 'overview', label: '总览' }],
+    settings: { theme: 'system' }
+  });
+
+  assert.match(html, /<h1 data-workspace-title>总览<\/h1>/);
+});
+
+test('sidebar renders safe labels for all supported themes and unknown values', () => {
+  const expectedLabels = new Map([
+    ['system', '跟随系统'],
+    ['light', '浅色'],
+    ['dark', '深色'],
+    ['unknown', '跟随系统']
+  ]);
+
+  for (const [theme, label] of expectedLabels) {
+    const state = createInitialState({ panel: { open: true } });
+    state.settings = { ...state.settings, theme };
+    const html = renderPanelHtml(state);
+    assert.match(html, new RegExp(`<span class="ttap-theme-state">${label}</span>`));
+  }
+});
+
+test('fullscreen shell escapes projected tab ids and labels', () => {
+  const unsafeId = 'overview" autofocus onfocus="unsafe';
+  const unsafeLabel = '<img src=x onerror=alert(1)>';
+  const state = createInitialState({
+    panel: { open: true, activeTab: unsafeId },
+    tabs: [{ id: unsafeId, label: unsafeLabel }]
+  });
+  const html = renderPanelHtml(state);
+
+  assert.doesNotMatch(html, /data-tab="overview" autofocus/);
+  assert.doesNotMatch(html, /<img src=x onerror=alert\(1\)>/);
+  assert.match(html, /data-tab="overview&quot; autofocus onfocus=&quot;unsafe"/);
+  assert.match(html, /<h1 data-workspace-title>&lt;img src=x onerror=alert\(1\)&gt;<\/h1>/);
+});
+
+test('malformed tab ids use a safe fallback icon', () => {
+  const html = renderPanelHtml({
+    panel: { open: true, activeTab: 'constructor' },
+    tabs: [{ id: 'constructor', label: '异常标签' }],
+    settings: { theme: 'system' }
+  });
+
+  assert.match(html, /class="ttap-tab-icon fa-solid fa-gauge-high"/);
+  assert.doesNotMatch(html, /function Object/);
+});
+
 test('debug tab renders export button when active', () => {
   const state = createInitialState({ panel: { open: true, activeTab: 'debug', badge: null } });
   const html = renderPanelHtml(state, [{ level: 'info', channel: 'test', message: 'hello', seq: 1 }]);

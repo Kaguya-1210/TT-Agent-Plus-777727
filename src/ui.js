@@ -1,12 +1,23 @@
 import { DISPLAY_NAME, PANEL_TABS } from './constants.js';
 import { filterCatalogEntries } from './worldInfoRuleEditor.js';
 
+const TAB_ICONS = Object.freeze({
+  overview: 'fa-gauge-high',
+  tasks: 'fa-list-check',
+  rules: 'fa-wand-magic-sparkles',
+  cache: 'fa-box-archive',
+  debug: 'fa-bug',
+  settings: 'fa-gear'
+});
+
 export function renderPanelHtml(state, debugEntries = []) {
   const safeState = normalizeState(state);
   const safeDebugEntries = records(debugEntries);
   const tabButtons = safeState.tabs.map((tab) => {
-    const active = tab.id === safeState.panel.activeTab ? ' aria-selected="true"' : ' aria-selected="false"';
-    return `<button class="ttap-tab" data-tab="${escapeHtml(tab.id)}" type="button"${active}>${escapeHtml(tab.label)}</button>`;
+    const tabId = toText(tab.id);
+    const active = tabId === safeState.panel.activeTab ? ' aria-selected="true"' : ' aria-selected="false"';
+    const icon = Object.hasOwn(TAB_ICONS, tabId) ? TAB_ICONS[tabId] : TAB_ICONS.overview;
+    return `<button class="ttap-tab" data-tab="${escapeHtml(tabId)}" type="button" role="tab"${active}><i class="ttap-tab-icon fa-solid ${icon}" aria-hidden="true"></i><span>${escapeHtml(tab.label)}</span></button>`;
   }).join('');
   const hiddenAttr = safeState.panel.open ? '' : ' hidden';
   const theme = normalizeTheme(safeState.settings.theme);
@@ -15,15 +26,38 @@ export function renderPanelHtml(state, debugEntries = []) {
     `<div class="ttap-backdrop" data-ttap-close${hiddenAttr}></div>`,
     `<aside class="ttap-panel" data-open="${safeState.panel.open ? 'true' : 'false'}" data-ttap-theme="${escapeHtml(theme)}" aria-label="${escapeHtml(DISPLAY_NAME)}">`,
     '<header class="ttap-header">',
+    renderProductIdentity(),
+    '<button class="ttap-icon-button ttap-mobile-close" type="button" data-ttap-close aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>',
+    '</header>',
+    `<nav class="ttap-tabs" role="tablist" aria-label="主导航">${tabButtons}</nav>`,
+    '<footer class="ttap-sidebar-footer">',
+    `<span class="ttap-theme-state">${escapeHtml(themeLabel(theme))}</span>`,
+    '<button class="ttap-icon-button ttap-desktop-close" type="button" data-ttap-close aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>',
+    '</footer>',
+    '<header class="ttap-workspace-header">',
+    `<span class="ttap-section-label">工作区</span><h1 data-workspace-title>${escapeHtml(activeTabLabel(safeState))}</h1>`,
+    '</header>',
+    `<section class="ttap-body" data-workspace-body>${renderActiveTab(safeState, safeDebugEntries)}</section>`,
+    '</aside>'
+  ].join('');
+}
+
+function activeTabLabel(state) {
+  return state.tabs.find((tab) => tab.id === state.panel.activeTab)?.label ?? '总览';
+}
+
+function themeLabel(theme) {
+  if (theme === 'light') return '浅色';
+  if (theme === 'dark') return '深色';
+  return '跟随系统';
+}
+
+function renderProductIdentity() {
+  return [
     '<div class="ttap-product">',
     '<span class="ttap-product-kicker">TT Agent</span>',
     `<strong class="ttap-product-title">${escapeHtml(DISPLAY_NAME)}</strong>`,
-    '</div>',
-    '<button class="ttap-icon-button" type="button" data-ttap-close aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>',
-    '</header>',
-    `<nav class="ttap-tabs" role="tablist">${tabButtons}</nav>`,
-    `<section class="ttap-body">${renderActiveTab(safeState, safeDebugEntries)}</section>`,
-    '</aside>'
+    '</div>'
   ].join('');
 }
 

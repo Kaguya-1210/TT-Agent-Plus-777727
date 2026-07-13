@@ -651,6 +651,111 @@ test('mountPanel soft-fails when the getElementById method getter throws', () =>
   assert.equal(mounted.render(), false);
 });
 
+function assertRootCreationSoftFails(documentRef) {
+  let mounted;
+  assert.doesNotThrow(() => {
+    mounted = mountPanel({ documentRef });
+  });
+  assert.equal(mounted.root, null);
+  assert.equal(mounted.render(), false);
+}
+
+test('mountPanel soft-fails when the createElement method getter throws', () => {
+  const documentRef = {
+    getElementById: () => null,
+    body: { append() {} }
+  };
+  Object.defineProperty(documentRef, 'createElement', {
+    get() {
+      throw new Error('createElement getter failed');
+    }
+  });
+
+  assertRootCreationSoftFails(documentRef);
+});
+
+test('mountPanel soft-fails when the body getter throws during root creation', () => {
+  const documentRef = {
+    getElementById: () => null,
+    createElement: () => ({})
+  };
+  Object.defineProperty(documentRef, 'body', {
+    get() {
+      throw new Error('body getter failed');
+    }
+  });
+
+  assertRootCreationSoftFails(documentRef);
+});
+
+test('mountPanel soft-fails when the body append method getter throws', () => {
+  let appendChildCalls = 0;
+  const body = {
+    appendChild() {
+      appendChildCalls += 1;
+    }
+  };
+  Object.defineProperty(body, 'append', {
+    get() {
+      throw new Error('append getter failed');
+    }
+  });
+  const documentRef = {
+    getElementById: () => null,
+    createElement: () => ({}),
+    body
+  };
+
+  assertRootCreationSoftFails(documentRef);
+  assert.equal(appendChildCalls, 0);
+});
+
+test('mountPanel soft-fails when the body appendChild method getter throws', () => {
+  const body = {};
+  Object.defineProperty(body, 'appendChild', {
+    get() {
+      throw new Error('appendChild getter failed');
+    }
+  });
+  const documentRef = {
+    getElementById: () => null,
+    createElement: () => ({}),
+    body
+  };
+
+  assertRootCreationSoftFails(documentRef);
+});
+
+test('mountPanel creates and appends a missing root through safe document APIs', () => {
+  const appended = [];
+  const root = {
+    id: '',
+    innerHTML: '',
+    querySelector: () => null,
+    querySelectorAll: () => []
+  };
+  const documentRef = {
+    getElementById: () => null,
+    createElement: () => root,
+    body: {
+      append(node) {
+        appended.push(node);
+      }
+    }
+  };
+
+  const mounted = mountPanel({
+    documentRef,
+    getState: () => createInitialState({ panel: { open: true } })
+  });
+
+  assert.equal(mounted.root, root);
+  assert.equal(root.id, 'tt-agent-plus-727-root');
+  assert.deepEqual(appended, [root]);
+  assert.match(root.innerHTML, /class="ttap-panel"/);
+  assert.equal(mounted.render(), true);
+});
+
 test('mountPanel render soft-fails when root query APIs are missing', () => {
   const root = {
     innerHTML: '',

@@ -106,19 +106,28 @@ export function mountPanel(options = {}) {
   }
 
   if (!root) {
-    if (typeof documentRef.createElement !== 'function' || !isRecord(documentRef.body)) {
-      return emptyMount();
-    }
-
+    const propertyAccessFailed = Symbol('property access failed');
     try {
-      root = documentRef.createElement('div');
-      root.id = rootId;
-      if (typeof documentRef.body.append === 'function') {
-        documentRef.body.append(root);
-      } else if (typeof documentRef.body.appendChild === 'function') {
-        documentRef.body.appendChild(root);
-      } else {
+      const createElement = safeProperty(documentRef, 'createElement', propertyAccessFailed);
+      const body = safeProperty(documentRef, 'body', propertyAccessFailed);
+      if (createElement === propertyAccessFailed || body === propertyAccessFailed
+        || typeof createElement !== 'function' || !isRecord(body)) {
         return emptyMount();
+      }
+
+      root = createElement.call(documentRef, 'div');
+      if (!isRecord(root)) return emptyMount();
+      root.id = rootId;
+      const append = safeProperty(body, 'append', propertyAccessFailed);
+      if (append === propertyAccessFailed) return emptyMount();
+      if (typeof append === 'function') {
+        append.call(body, root);
+      } else {
+        const appendChild = safeProperty(body, 'appendChild', propertyAccessFailed);
+        if (appendChild === propertyAccessFailed || typeof appendChild !== 'function') {
+          return emptyMount();
+        }
+        appendChild.call(body, root);
       }
     } catch (error) {
       warnDebug(debug, 'Unable to create panel root', error);
@@ -862,11 +871,11 @@ function safeDatasetValue(node, key) {
   return safeProperty(safeDataset(node), key);
 }
 
-function safeProperty(value, key) {
+function safeProperty(value, key, fallback) {
   try {
     return value?.[key];
   } catch {
-    return undefined;
+    return fallback;
   }
 }
 

@@ -22,11 +22,14 @@ export function renderPanelHtml(state, debugEntries = []) {
     return `<button class="ttap-tab" data-tab="${escapeHtml(tab.id)}" type="button" role="tab"${active}><i class="ttap-tab-icon fa-solid ${tab.icon}" aria-hidden="true"></i><span>${escapeHtml(tab.label)}</span></button>`;
   }).join('');
   const hiddenAttr = safeState.panel.open ? '' : ' hidden';
+  const panelAccessibility = safeState.panel.open
+    ? ' aria-hidden="false" tabindex="-1"'
+    : ' aria-hidden="true" tabindex="-1" inert';
   const theme = normalizeTheme(safeState.settings.theme);
 
   return [
     `<div class="ttap-backdrop" data-ttap-close${hiddenAttr}></div>`,
-    `<aside class="ttap-panel" data-ttap-shell="v1" data-open="${safeState.panel.open ? 'true' : 'false'}" data-ttap-theme="${escapeHtml(theme)}" aria-label="${escapeHtml(DISPLAY_NAME)}">`,
+    `<aside class="ttap-panel" data-ttap-shell="v1" data-open="${safeState.panel.open ? 'true' : 'false'}" data-ttap-theme="${escapeHtml(theme)}" aria-label="${escapeHtml(DISPLAY_NAME)}"${panelAccessibility}>`,
     '<header class="ttap-header">',
     renderProductIdentity(),
     '<button class="ttap-icon-button ttap-mobile-close" type="button" data-ttap-close aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>',
@@ -142,6 +145,8 @@ export function mountPanel(options = {}) {
   let hasRendered = false;
   let ownedShell = null;
   let renderedActiveTab = null;
+  let previousOpen = false;
+  let returnFocusNode = null;
 
   function patchPanelShell(root, state, debugEntries) {
     const currentShell = captureOwnedPanelShell(root, debug);
@@ -155,11 +160,15 @@ export function mountPanel(options = {}) {
     let next;
     try {
       const theme = normalizeTheme(state.settings.theme);
+      const isOpen = state.panel.open === true;
       next = {
-        open: state.panel.open ? 'true' : 'false',
+        isOpen,
+        open: isOpen ? 'true' : 'false',
+        ariaHidden: String(!isOpen),
+        inert: !isOpen,
         theme,
         activeTab: state.panel.activeTab,
-        backdropHidden: !state.panel.open,
+        backdropHidden: !isOpen,
         title: activeTabLabel(state.panel.activeTab),
         themeLabel: themeLabel(theme),
         bodyHtml: renderActiveTab(state, debugEntries),
@@ -193,6 +202,14 @@ export function mountPanel(options = {}) {
     if (!write(
       () => safeSetData(panel, 'open', 'data-open', next.open, debug),
       () => restoreDatasetState(previous.open, debug)
+    )) return failedPatch();
+    if (!write(
+      () => safeSetAttribute(panel, 'aria-hidden', next.ariaHidden, debug),
+      () => restoreAttributeState(previous.ariaHidden, debug)
+    )) return failedPatch();
+    if (!write(
+      () => safeSetBooleanAttribute(panel, 'inert', next.inert, debug),
+      () => restoreAttributeState(previous.inert, debug)
     )) return failedPatch();
     if (!write(
       () => safeSetData(panel, 'ttapTheme', 'data-ttap-theme', next.theme, debug),
@@ -231,7 +248,7 @@ export function mountPanel(options = {}) {
       if (tab.selected === 'true') activeTab = tab.node;
     }
 
-    restorePanelFocus(root, focusSnapshot, debug);
+    if (next.isOpen) restorePanelFocus(root, focusSnapshot, debug);
     safeScrollIntoView(activeTab, debug);
     restorePanelScroll(body, scrollSnapshot, sameActiveTab, debug);
     renderedActiveTab = state.panel.activeTab;
@@ -241,6 +258,9 @@ export function mountPanel(options = {}) {
   function render() {
     const focusSnapshot = capturePanelFocus(documentRef, root);
     const state = safeNormalizeState(safeGet(getState, undefined, debug), debug);
+    const opening = state.panel.open && !previousOpen;
+    const closing = !state.panel.open && previousOpen;
+    const openingFocusNode = opening ? captureReturnFocusNode(documentRef, root) : null;
     let debugEntries;
     try {
       debugEntries = records(safeGet(getDebugEntries, [], debug));
@@ -269,7 +289,7 @@ export function mountPanel(options = {}) {
         warnDebug(debug, 'Unable to render panel', error);
         return false;
       }
-      restorePanelFocus(root, focusSnapshot, debug);
+      if (state.panel.open) restorePanelFocus(root, focusSnapshot, debug);
     }
 
     if (typeof safeProperty(root, 'querySelectorAll') !== 'function'
@@ -337,6 +357,18 @@ export function mountPanel(options = {}) {
     bound = bindEach(root, '[data-world-info-rule-mode]', (button) => () => {
       safeInvoke(onWorldInfoRuleDraft, debug, { mode: safeDatasetValue(button, 'worldInfoRuleMode') });
     }, eventBindings, debug) && bound;
+
+    if (!patchFailed) {
+      if (opening) {
+        returnFocusNode = openingFocusNode;
+        focusPanelEntry(root, debug);
+      } else if (closing) {
+        const focusNode = returnFocusNode;
+        returnFocusNode = null;
+        safeFocusNode(focusNode, debug, 'Unable to restore panel trigger focus');
+      }
+      previousOpen = state.panel.open;
+    }
 
     return patchFailed ? false : bound;
   }
@@ -790,6 +822,8 @@ function sameOwnedPanelShell(owned, current) {
 function capturePanelPatchState(nodes, debug) {
   const state = {
     open: captureDatasetState(nodes.panel, 'open'),
+    ariaHidden: captureAttributeState(nodes.panel, 'aria-hidden'),
+    inert: captureAttributeState(nodes.panel, 'inert'),
     theme: captureDatasetState(nodes.panel, 'ttapTheme'),
     activeTab: captureDatasetState(nodes.panel, 'activeTab'),
     backdrop: capturePropertyState(nodes.backdrop, 'hidden'),
@@ -798,7 +832,8 @@ function capturePanelPatchState(nodes, debug) {
     body: capturePropertyState(nodes.body, 'innerHTML'),
     tabs: nodes.tabs.map((tab) => captureAttributeState(tab, 'aria-selected'))
   };
-  if (!state.open || !state.theme || !state.activeTab || !state.backdrop || !state.title || !state.body
+  if (!state.open || !state.ariaHidden || !state.inert || !state.theme || !state.activeTab
+    || !state.backdrop || !state.title || !state.body
     || (nodes.themeState && !state.themeLabel) || state.tabs.some((tab) => !tab)) {
     warnDebug(debug, 'Unable to capture panel state for patch rollback', new Error('panel snapshot failed'));
     return null;
@@ -1078,6 +1113,53 @@ function bindNodeEvent(node, eventName, createListener, bindings, selector, debu
   }
 }
 
+function captureReturnFocusNode(documentRef, root) {
+  const failed = Symbol('focus owner read failed');
+  const active = safeProperty(documentRef, 'activeElement', failed);
+  const contains = safeProperty(root, 'contains', failed);
+  if (active === failed || !active || contains === failed || typeof contains !== 'function') return null;
+  try {
+    return contains.call(root, active) ? null : active;
+  } catch {
+    return null;
+  }
+}
+
+function focusPanelEntry(root, debug) {
+  const panel = safeQuery(root, '.ttap-panel', debug);
+  if (safeFocusNode(panel, debug, 'Unable to focus opened panel')) return true;
+
+  for (const tab of safeQueryAll(root, '[data-tab]', debug) ?? []) {
+    const getAttribute = safeProperty(tab, 'getAttribute');
+    if (typeof getAttribute !== 'function') continue;
+    try {
+      if (getAttribute.call(tab, 'aria-selected') === 'true') {
+        return safeFocusNode(tab, debug, 'Unable to focus active panel tab');
+      }
+    } catch {
+      // Continue to another stable focus target.
+    }
+  }
+  return false;
+}
+
+function safeFocusNode(node, debug, message) {
+  const focus = safeProperty(node, 'focus');
+  if (typeof focus !== 'function') return false;
+  try {
+    focus.call(node, { preventScroll: true });
+    return true;
+  } catch {
+    try {
+      focus.call(node);
+      return true;
+    } catch (error) {
+      warnDebug(debug, message, error);
+      return false;
+    }
+  }
+}
+
 function capturePanelFocus(documentRef, root) {
   try {
     const active = documentRef?.activeElement;
@@ -1102,13 +1184,7 @@ function restorePanelFocus(root, snapshot, debug) {
   if (!snapshot) return false;
   try {
     const control = safeQuery(root, snapshot.selector, debug);
-    const focus = safeProperty(control, 'focus');
-    if (!control || typeof focus !== 'function') return false;
-    try {
-      focus.call(control, { preventScroll: true });
-    } catch {
-      focus.call(control);
-    }
+    if (!control || !safeFocusNode(control, debug, 'Unable to restore panel input focus')) return false;
     const setSelectionRange = safeProperty(control, 'setSelectionRange');
     if (snapshot.start !== null && snapshot.end !== null && typeof setSelectionRange === 'function') {
       setSelectionRange.call(control, snapshot.start, snapshot.end, snapshot.direction);
@@ -1228,6 +1304,19 @@ function safeSetAttribute(node, name, value, debug) {
     return true;
   } catch (error) {
     warnDebug(debug, `Unable to update ${name}`, error);
+    return false;
+  }
+}
+
+function safeSetBooleanAttribute(node, name, present, debug) {
+  if (present) return safeSetAttribute(node, name, '', debug);
+  const removeAttribute = safeProperty(node, 'removeAttribute');
+  if (typeof removeAttribute !== 'function') return false;
+  try {
+    removeAttribute.call(node, name);
+    return true;
+  } catch (error) {
+    warnDebug(debug, `Unable to remove ${name}`, error);
     return false;
   }
 }

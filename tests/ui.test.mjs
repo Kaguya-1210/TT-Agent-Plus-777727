@@ -5,6 +5,39 @@ import { PANEL_TABS } from '../src/constants.js';
 import { createInitialState } from '../src/state.js';
 import { mountPanel, renderPanelHtml } from '../src/ui.js';
 
+function extractCssBlock(source, selectorOrAtRule) {
+  let searchFrom = 0;
+  let openingBrace = -1;
+
+  while (searchFrom < source.length) {
+    const selectorIndex = source.indexOf(selectorOrAtRule, searchFrom);
+    if (selectorIndex < 0) break;
+    const candidateBrace = source.indexOf('{', selectorIndex + selectorOrAtRule.length);
+    if (candidateBrace < 0) break;
+    const suffix = source.slice(selectorIndex + selectorOrAtRule.length, candidateBrace);
+    if (/^\s*$/.test(suffix) || /^\s*,/.test(suffix)) {
+      openingBrace = candidateBrace;
+      break;
+    }
+    searchFrom = selectorIndex + selectorOrAtRule.length;
+  }
+
+  assert.notEqual(openingBrace, -1, `missing CSS block for ${selectorOrAtRule}`);
+  let depth = 1;
+  for (let index = openingBrace + 1; index < source.length; index += 1) {
+    if (source[index] === '{') depth += 1;
+    if (source[index] === '}') depth -= 1;
+    if (depth === 0) return source.slice(openingBrace + 1, index);
+  }
+  assert.fail(`unclosed CSS block for ${selectorOrAtRule}`);
+}
+
+function cssDeclaration(block, property) {
+  const escapedProperty = property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const matches = [...block.matchAll(new RegExp(`(?:^|;)\\s*${escapedProperty}:\\s*([^;]+);`, 'gm'))];
+  return matches.at(-1)?.[1].trim() ?? null;
+}
+
 test('panel renders Chinese tabs and product title', () => {
   const html = renderPanelHtml(createInitialState({ panel: { open: true, activeTab: 'overview', badge: null } }));
 
@@ -59,6 +92,20 @@ test('desktop and mobile close controls share the existing close callback marker
   assert.match(openHtml, /class="ttap-icon-button ttap-mobile-close"[^>]*data-ttap-close/);
   assert.match(openHtml, /class="ttap-icon-button ttap-desktop-close"[^>]*data-ttap-close/);
   assert.match(closedHtml, /class="ttap-backdrop" data-ttap-close hidden/);
+});
+
+test('panel HTML exposes open state and removes the closed shell from the focus tree', () => {
+  const openHtml = renderPanelHtml(createInitialState({ panel: { open: true } }));
+  const closedHtml = renderPanelHtml(createInitialState({ panel: { open: false } }));
+  const openTag = openHtml.match(/<aside class="ttap-panel"[^>]*>/)?.[0] ?? '';
+  const closedTag = closedHtml.match(/<aside class="ttap-panel"[^>]*>/)?.[0] ?? '';
+
+  assert.match(openTag, /aria-hidden="false"/);
+  assert.match(openTag, /tabindex="-1"/);
+  assert.doesNotMatch(openTag, /\sinert(?:\s|>)/);
+  assert.match(closedTag, /aria-hidden="true"/);
+  assert.match(closedTag, /tabindex="-1"/);
+  assert.match(closedTag, /\sinert(?:\s|>)/);
 });
 
 test('workspace title falls back to overview for an invalid active tab', () => {
@@ -513,101 +560,139 @@ test('world-info edit view keeps the rule list and renders complete catalog cont
 
 test('world-info rule styles provide stable scrolling rows and a narrow single-column editor', () => {
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  const entryListBlock = extractCssBlock(css, '.ttap-entry-list');
+  const entryRowBlock = extractCssBlock(css, '.ttap-entry-row');
+  const editingWorkspaceBlock = extractCssBlock(css, '.ttap-world-info-workspace[data-editing="true"]');
+  const narrowCss = extractCssBlock(css, '@media (max-width: 520px)');
 
   assert.match(css, /\.ttap-segmented\s*{/);
   assert.match(css, /\.ttap-world-info-editor\s*{/);
   assert.match(css, /\.ttap-entry-toolbar\s*{/);
-  assert.match(css, /\.ttap-entry-list\s*{[\s\S]*overflow-y:\s*auto/);
-  assert.match(css, /\.ttap-entry-row\s*{[\s\S]*min-height:/);
-  assert.match(css, /\.ttap-world-info-workspace\[data-editing="true"\]\s*{[\s\S]*grid-template-columns:[^;]*minmax/);
-  assert.match(css, /@media\s*\(max-width:\s*520px\)[\s\S]*\.ttap-world-info-editor[\s\S]*grid-template-columns:\s*1fr/);
-  assert.match(css, /@media\s*\(max-width:\s*520px\)[\s\S]*\.ttap-world-info-workspace\[data-editing="true"\][\s\S]*grid-template-columns:\s*1fr/);
-  assert.match(css, /@media\s*\(max-width:\s*520px\)[\s\S]*\.ttap-entry-toolbar[\s\S]*grid-template-columns:\s*1fr/);
+  assert.equal(cssDeclaration(entryListBlock, 'overflow-y'), 'auto');
+  assert.notEqual(cssDeclaration(entryRowBlock, 'min-height'), null);
+  assert.match(cssDeclaration(editingWorkspaceBlock, 'grid-template-columns') ?? '', /minmax/);
+  assert.equal(cssDeclaration(extractCssBlock(narrowCss, '.ttap-world-info-editor'), 'grid-template-columns'), '1fr');
+  assert.equal(cssDeclaration(extractCssBlock(narrowCss, '.ttap-world-info-workspace[data-editing="true"]'), 'grid-template-columns'), '1fr');
+  assert.equal(cssDeclaration(extractCssBlock(narrowCss, '.ttap-entry-toolbar'), 'grid-template-columns'), '1fr');
 });
 
 
 
 test('panel fills the viewport without legacy centered-modal geometry', () => {
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
-  const panelBlock = css.match(/\.ttap-panel\s*{(?<body>[\s\S]*?)\n}/)?.groups?.body ?? '';
-  const openBlock = css.match(/\.ttap-panel\[data-open="true"\]\s*{(?<body>[\s\S]*?)\n}/)?.groups?.body ?? '';
+  const panelBlock = extractCssBlock(css, '.ttap-panel');
+  const openBlock = extractCssBlock(css, '.ttap-panel[data-open="true"]');
 
-  assert.match(panelBlock, /inset:\s*0/);
-  assert.match(panelBlock, /width:\s*100vw/);
+  assert.equal(cssDeclaration(panelBlock, 'inset'), '0');
+  assert.equal(cssDeclaration(panelBlock, 'width'), '100vw');
   assert.match(panelBlock, /height:\s*100vh;[\s\S]*height:\s*100dvh/);
-  assert.match(panelBlock, /min-width:\s*0/);
-  assert.match(panelBlock, /min-height:\s*0/);
-  assert.match(panelBlock, /border:\s*0/);
-  assert.match(panelBlock, /border-radius:\s*0/);
-  assert.match(panelBlock, /box-shadow:\s*none/);
-  assert.match(panelBlock, /overflow:\s*hidden/);
-  assert.match(openBlock, /transform:\s*translateY\(0\)/);
+  assert.equal(cssDeclaration(panelBlock, 'min-width'), '0');
+  assert.equal(cssDeclaration(panelBlock, 'min-height'), '0');
+  assert.equal(cssDeclaration(panelBlock, 'border'), '0');
+  assert.equal(cssDeclaration(panelBlock, 'border-radius'), '0');
+  assert.equal(cssDeclaration(panelBlock, 'box-shadow'), 'none');
+  assert.equal(cssDeclaration(panelBlock, 'overflow'), 'hidden');
+  assert.equal(cssDeclaration(panelBlock, 'visibility'), 'hidden');
+  assert.equal(cssDeclaration(panelBlock, 'transition'), 'transform 180ms ease, opacity 180ms ease, visibility 0s linear 180ms');
+  assert.equal(cssDeclaration(openBlock, 'transform'), 'translateY(0)');
+  assert.equal(cssDeclaration(openBlock, 'visibility'), 'visible');
+  assert.equal(cssDeclaration(openBlock, 'transition-delay'), '0s');
   assert.doesNotMatch(panelBlock, /top:\s*50|left:\s*50|translate\(-50%|scale\(|width:\s*min\(|height:\s*min\(|max-(?:width|height):\s*calc\(/);
   assert.doesNotMatch(openBlock, /translate\(-50%|scale\(/);
 });
 
 test('desktop shell uses a 208px sidebar with vertical navigation and an independently scrolling body', () => {
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
-  const panelBlock = css.match(/\.ttap-panel\s*{(?<body>[\s\S]*?)\n}/)?.groups?.body ?? '';
-  const tabsBlock = css.match(/\.ttap-tabs\s*{(?<body>[\s\S]*?)\n}/)?.groups?.body ?? '';
-  const bodyBlock = css.match(/\.ttap-body\s*{(?<body>[\s\S]*?)\n}/)?.groups?.body ?? '';
+  const panelBlock = extractCssBlock(css, '.ttap-panel');
+  const headerBlock = extractCssBlock(css, '.ttap-header');
+  const tabsBlock = extractCssBlock(css, '.ttap-tabs');
+  const tabBlock = extractCssBlock(css, '.ttap-tab');
+  const footerBlock = extractCssBlock(css, '.ttap-sidebar-footer');
+  const workspaceHeaderBlock = extractCssBlock(css, '.ttap-workspace-header');
+  const bodyBlock = extractCssBlock(css, '.ttap-body');
 
-  assert.match(panelBlock, /grid-template-columns:\s*208px minmax\(0,\s*1fr\)/);
-  assert.match(panelBlock, /grid-template-rows:\s*auto minmax\(0,\s*1fr\) auto/);
-  assert.match(panelBlock, /grid-template-areas:\s*"brand workspace-header"\s*"tabs body"\s*"sidebar-footer body"/);
-  assert.match(css, /\.ttap-header\s*{[\s\S]*grid-area:\s*brand/);
-  assert.match(css, /\.ttap-tabs\s*{[\s\S]*grid-area:\s*tabs/);
-  assert.match(css, /\.ttap-sidebar-footer\s*{[\s\S]*grid-area:\s*sidebar-footer/);
-  assert.match(css, /\.ttap-workspace-header\s*{[\s\S]*grid-area:\s*workspace-header/);
-  assert.match(css, /\.ttap-body\s*{[\s\S]*grid-area:\s*body/);
-  assert.match(tabsBlock, /flex-direction:\s*column/);
-  assert.match(tabsBlock, /overflow-x:\s*hidden/);
-  assert.match(css, /\.ttap-tab\s*{[\s\S]*display:\s*flex[\s\S]*white-space:\s*nowrap/);
-  assert.match(css, /\.ttap-mobile-close\s*{[\s\S]*display:\s*none/);
-  assert.match(css, /\.ttap-desktop-close\s*{[\s\S]*display:\s*(?!none)/);
-  assert.match(bodyBlock, /min-width:\s*0/);
-  assert.match(bodyBlock, /min-height:\s*0/);
-  assert.match(bodyBlock, /overflow:\s*auto/);
-  assert.match(bodyBlock, /overscroll-behavior:\s*contain/);
+  assert.equal(cssDeclaration(panelBlock, 'grid-template-columns'), '208px minmax(0, 1fr)');
+  assert.equal(cssDeclaration(panelBlock, 'grid-template-rows'), 'auto minmax(0, 1fr) auto');
+  assert.equal(cssDeclaration(panelBlock, 'grid-template-areas'), '"brand workspace-header"\n    "tabs body"\n    "sidebar-footer body"');
+  assert.equal(cssDeclaration(headerBlock, 'grid-area'), 'brand');
+  assert.equal(cssDeclaration(tabsBlock, 'grid-area'), 'tabs');
+  assert.equal(cssDeclaration(footerBlock, 'grid-area'), 'sidebar-footer');
+  assert.equal(cssDeclaration(workspaceHeaderBlock, 'grid-area'), 'workspace-header');
+  assert.equal(cssDeclaration(bodyBlock, 'grid-area'), 'body');
+  assert.equal(cssDeclaration(tabsBlock, 'flex-direction'), 'column');
+  assert.equal(cssDeclaration(tabsBlock, 'overflow-x'), 'hidden');
+  assert.equal(cssDeclaration(tabBlock, 'display'), 'flex');
+  assert.equal(cssDeclaration(tabBlock, 'white-space'), 'nowrap');
+  assert.equal(cssDeclaration(extractCssBlock(css, '.ttap-mobile-close'), 'display'), 'none');
+  assert.equal(cssDeclaration(extractCssBlock(css, '.ttap-desktop-close'), 'display'), 'inline-grid');
+  assert.equal(cssDeclaration(bodyBlock, 'min-width'), '0');
+  assert.equal(cssDeclaration(bodyBlock, 'min-height'), '0');
+  assert.equal(cssDeclaration(bodyBlock, 'overflow'), 'auto');
+  assert.equal(cssDeclaration(bodyBlock, 'overscroll-behavior'), 'contain');
 });
 
 test('mobile shell at 720px uses safe areas, horizontal snap tabs, and one scrolling column', () => {
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
-  const mobileStart = css.indexOf('@media (max-width: 720px)');
-  const mobileEnd = css.indexOf('@media (max-width: 520px)', mobileStart);
-  const mobileCss = mobileStart >= 0 ? css.slice(mobileStart, mobileEnd >= 0 ? mobileEnd : undefined) : '';
+  const mobileCss = extractCssBlock(css, '@media (max-width: 720px)');
+  const panelBlock = extractCssBlock(mobileCss, '.ttap-panel');
+  const tabsBlock = extractCssBlock(mobileCss, '.ttap-tabs');
+  const tabBlock = extractCssBlock(mobileCss, '.ttap-tab');
+  const bodyBlock = extractCssBlock(mobileCss, '.ttap-body');
 
-  assert.notEqual(mobileStart, -1);
-  assert.match(mobileCss, /\.ttap-panel\s*{[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
-  assert.match(mobileCss, /\.ttap-panel\s*{[\s\S]*grid-template-rows:\s*auto auto minmax\(0,\s*1fr\)/);
-  assert.match(mobileCss, /grid-template-areas:\s*"brand"\s*"tabs"\s*"body"/);
-  assert.match(mobileCss, /padding-top:\s*env\(safe-area-inset-top,\s*0px\)/);
-  assert.match(mobileCss, /padding-right:\s*env\(safe-area-inset-right,\s*0px\)/);
-  assert.match(mobileCss, /padding-bottom:\s*env\(safe-area-inset-bottom,\s*0px\)/);
-  assert.match(mobileCss, /padding-left:\s*env\(safe-area-inset-left,\s*0px\)/);
-  assert.match(mobileCss, /\.ttap-workspace-header[\s\S]*\.ttap-sidebar-footer\s*{[\s\S]*display:\s*none/);
-  assert.match(mobileCss, /\.ttap-mobile-close\s*{[\s\S]*display:\s*(?:inline-)?flex/);
-  assert.match(mobileCss, /\.ttap-tabs\s*{[\s\S]*flex-direction:\s*row[\s\S]*flex-wrap:\s*nowrap/);
-  assert.match(mobileCss, /\.ttap-tabs\s*{[\s\S]*overflow-x:\s*auto[\s\S]*overflow-y:\s*hidden/);
-  assert.match(mobileCss, /-webkit-overflow-scrolling:\s*touch/);
-  assert.match(mobileCss, /scroll-snap-type:\s*x mandatory/);
-  assert.match(mobileCss, /\.ttap-tab\s*{[\s\S]*flex:\s*0 0 auto[\s\S]*scroll-snap-align:\s*start/);
-  assert.match(mobileCss, /\.ttap-body\s*{[\s\S]*min-width:\s*0[\s\S]*min-height:\s*0[\s\S]*overflow:\s*auto/);
-  assert.match(mobileCss, /\.ttap-world-info-workspace\[data-editing="true"\]\s*{[\s\S]*grid-template-columns:\s*1fr/);
+  assert.equal(cssDeclaration(panelBlock, 'grid-template-columns'), 'minmax(0, 1fr)');
+  assert.equal(cssDeclaration(panelBlock, 'grid-template-rows'), 'auto auto minmax(0, 1fr)');
+  assert.equal(cssDeclaration(panelBlock, 'grid-template-areas'), '"brand"\n      "tabs"\n      "body"');
+  assert.equal(cssDeclaration(panelBlock, 'padding-top'), 'env(safe-area-inset-top, 0px)');
+  assert.equal(cssDeclaration(panelBlock, 'padding-right'), 'env(safe-area-inset-right, 0px)');
+  assert.equal(cssDeclaration(panelBlock, 'padding-bottom'), 'env(safe-area-inset-bottom, 0px)');
+  assert.equal(cssDeclaration(panelBlock, 'padding-left'), 'env(safe-area-inset-left, 0px)');
+  assert.equal(cssDeclaration(extractCssBlock(mobileCss, '.ttap-workspace-header'), 'display'), 'none');
+  assert.equal(cssDeclaration(extractCssBlock(mobileCss, '.ttap-sidebar-footer'), 'display'), 'none');
+  assert.equal(cssDeclaration(extractCssBlock(mobileCss, '.ttap-mobile-close'), 'display'), 'inline-grid');
+  assert.equal(cssDeclaration(extractCssBlock(mobileCss, '.ttap-desktop-close'), 'display'), 'none');
+  assert.equal(cssDeclaration(tabsBlock, 'flex-direction'), 'row');
+  assert.equal(cssDeclaration(tabsBlock, 'flex-wrap'), 'nowrap');
+  assert.equal(cssDeclaration(tabsBlock, 'overflow-x'), 'auto');
+  assert.equal(cssDeclaration(tabsBlock, 'overflow-y'), 'hidden');
+  assert.equal(cssDeclaration(tabsBlock, '-webkit-overflow-scrolling'), 'touch');
+  assert.equal(cssDeclaration(tabsBlock, 'scroll-snap-type'), 'x mandatory');
+  assert.equal(cssDeclaration(tabBlock, 'flex'), '0 0 auto');
+  assert.equal(cssDeclaration(tabBlock, 'scroll-snap-align'), 'start');
+  assert.equal(cssDeclaration(bodyBlock, 'min-width'), '0');
+  assert.equal(cssDeclaration(bodyBlock, 'min-height'), '0');
+  assert.equal(cssDeclaration(bodyBlock, 'overflow'), 'auto');
+  assert.equal(cssDeclaration(extractCssBlock(mobileCss, '.ttap-world-info-workspace[data-editing="true"]'), 'grid-template-columns'), '1fr');
 });
 
 test('responsive shell keeps the backdrop inert and uses accessible motion', () => {
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
-  const backdropBlock = css.match(/\.ttap-backdrop\s*{(?<body>[\s\S]*?)\n}/)?.groups?.body ?? '';
-  const panelBlock = css.match(/\.ttap-panel\s*{(?<body>[\s\S]*?)\n}/)?.groups?.body ?? '';
-  const reducedMotionCss = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+  const backdropBlock = extractCssBlock(css, '.ttap-backdrop');
+  const panelBlock = extractCssBlock(css, '.ttap-panel');
+  const reducedMotionCss = extractCssBlock(css, '@media (prefers-reduced-motion: reduce)');
+  const reducedTransitionBlock = extractCssBlock(reducedMotionCss, '.ttap-body');
 
-  assert.match(backdropBlock, /background:\s*transparent/);
-  assert.match(backdropBlock, /pointer-events:\s*none/);
-  assert.match(panelBlock, /transform:\s*translateY\(6px\)/);
-  assert.match(panelBlock, /transition:\s*transform 180ms ease,\s*opacity 180ms ease/);
+  assert.equal(cssDeclaration(backdropBlock, 'background'), 'transparent');
+  assert.equal(cssDeclaration(backdropBlock, 'pointer-events'), 'none');
+  assert.equal(cssDeclaration(panelBlock, 'transform'), 'translateY(6px)');
   assert.doesNotMatch(panelBlock, /scale\(/);
-  assert.match(reducedMotionCss, /\.ttap-panel[\s\S]*\.ttap-tab[\s\S]*\.ttap-body\s*{[\s\S]*transition:\s*none/);
+  assert.equal(cssDeclaration(reducedTransitionBlock, 'transition'), 'none');
+});
+
+test('form controls use a visible themed focus ring', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  const selectors = [
+    '.ttap-field input:focus-visible',
+    '.ttap-field select:focus-visible',
+    '.ttap-field textarea:focus-visible',
+    '.ttap-entry-select input:focus-visible',
+    '.ttap-entry-toolbar input:focus-visible'
+  ];
+  for (const selector of selectors) assert.match(css, new RegExp(selector.replaceAll('.', '\\.')));
+  const focusBlock = extractCssBlock(css, '.ttap-entry-toolbar input:focus-visible');
+
+  assert.equal(cssDeclaration(focusBlock, 'outline'), '2px solid var(--ttap-accent)');
+  assert.equal(cssDeclaration(focusBlock, 'outline-offset'), '2px');
+  assert.equal(cssDeclaration(focusBlock, 'border-color'), 'var(--ttap-accent-border)');
 });
 
 test('panel overlay is layered above host navigation chrome', () => {
@@ -1312,6 +1397,7 @@ function createStablePanelFixture(getState, options = {}) {
       attributes: new Map(),
       listeners: new Map(),
       scrollIntoViewCalls: [],
+      focusCalls: [],
       addEventListener(event, listener) {
         this.listeners.set(event, [...(this.listeners.get(event) ?? []), listener]);
       },
@@ -1323,8 +1409,15 @@ function createStablePanelFixture(getState, options = {}) {
       setAttribute(name, value) {
         this.attributes.set(name, String(value));
       },
+      removeAttribute(name) {
+        this.attributes.delete(name);
+      },
       getAttribute(name) {
         return this.attributes.get(name) ?? null;
+      },
+      focus(...args) {
+        this.focusCalls.push(args);
+        documentRef.activeElement = this;
       },
       scrollIntoView(value) {
         this.scrollIntoViewCalls.push(value);
@@ -1495,6 +1588,23 @@ function createStablePanelFixture(getState, options = {}) {
       ttapShell: 'v1',
       activeTab: state.panel.activeTab
     });
+    panel.className = 'ttap-panel';
+    panel.setAttribute('aria-hidden', String(!state.panel.open));
+    panel.setAttribute('tabindex', '-1');
+    if (!state.panel.open) panel.setAttribute('inert', '');
+    if (options.panelFocusFailure === 'getter') {
+      Object.defineProperty(panel, 'focus', {
+        configurable: true,
+        get() {
+          throw new Error('panel focus getter failed');
+        }
+      });
+    } else if (options.panelFocusFailure === 'call') {
+      panel.focus = (...args) => {
+        panel.focusCalls.push(args);
+        throw new Error('panel focus call failed');
+      };
+    }
     const backdrop = makeEventNode({ ttapClose: '' });
     backdrop.className = 'ttap-backdrop';
     backdrop.hidden = !state.panel.open;
@@ -1658,6 +1768,8 @@ function createStablePanelFixture(getState, options = {}) {
         ttapShell: 'v1',
         activeTab: shell.panel.dataset.activeTab
       });
+      panel.className = 'ttap-panel';
+      for (const [name, value] of shell.panel.attributes) panel.setAttribute(name, value);
       panel.querySelector = (selector) => {
         if (selector === '.ttap-mobile-close') {
           return mobileClose.className.split(' ').includes('ttap-mobile-close') ? mobileClose : null;
@@ -1712,6 +1824,7 @@ function createStablePanelFixture(getState, options = {}) {
 function snapshotStableShell(fixture) {
   return {
     panel: { ...fixture.panel.dataset },
+    panelAttributes: Object.fromEntries(fixture.panel.attributes),
     backdropHidden: fixture.backdrop.hidden,
     title: fixture.title.textContent,
     bodyHtml: fixture.body.innerHTML,
@@ -1748,6 +1861,100 @@ test('renderPanelHtml marks the owned panel shell version', () => {
   const html = renderPanelHtml(createInitialState({ panel: { open: true, activeTab: 'overview' } }));
 
   assert.match(html, /class="ttap-panel"[^>]*data-ttap-shell="v1"/);
+});
+
+test('mountPanel patches panel accessibility state in place across open transitions', () => {
+  let state = createInitialState({ panel: { open: false, activeTab: 'overview' } });
+  const fixture = createStablePanelFixture(() => state);
+  const mounted = mountPanel({ documentRef: fixture.documentRef, getState: () => state });
+  const panel = fixture.panel;
+
+  assert.equal(panel.dataset.open, 'false');
+  assert.equal(panel.getAttribute('aria-hidden'), 'true');
+  assert.equal(panel.getAttribute('inert'), '');
+
+  state = createInitialState({ panel: { open: true, activeTab: 'overview' } });
+  assert.equal(mounted.render(), true);
+  assert.equal(fixture.panel, panel);
+  assert.equal(panel.dataset.open, 'true');
+  assert.equal(panel.getAttribute('aria-hidden'), 'false');
+  assert.equal(panel.getAttribute('inert'), null);
+
+  state = createInitialState({ panel: { open: false, activeTab: 'overview' } });
+  assert.equal(mounted.render(), true);
+  assert.equal(fixture.panel, panel);
+  assert.equal(panel.dataset.open, 'false');
+  assert.equal(panel.getAttribute('aria-hidden'), 'true');
+  assert.equal(panel.getAttribute('inert'), '');
+});
+
+test('mountPanel focuses the plugin on open and returns focus to its trigger on close', () => {
+  let state = createInitialState({ panel: { open: false, activeTab: 'overview' } });
+  const fixture = createStablePanelFixture(() => state);
+  const trigger = {
+    focusCalls: [],
+    focus(...args) {
+      this.focusCalls.push(args);
+      fixture.documentRef.activeElement = this;
+    }
+  };
+  fixture.documentRef.activeElement = trigger;
+  const mounted = mountPanel({ documentRef: fixture.documentRef, getState: () => state });
+
+  state = createInitialState({ panel: { open: true, activeTab: 'rules' } });
+  assert.equal(mounted.render(), true);
+  assert.equal(fixture.documentRef.activeElement, fixture.panel);
+  assert.deepEqual(fixture.panel.focusCalls.at(-1), [{ preventScroll: true }]);
+
+  state = createInitialState({ panel: { open: false, activeTab: 'rules' } });
+  assert.equal(mounted.render(), true);
+  assert.equal(fixture.documentRef.activeElement, trigger);
+  assert.deepEqual(trigger.focusCalls, [[{ preventScroll: true }]]);
+});
+
+test('mountPanel handles an initially open state as an opening focus transition', () => {
+  const state = createInitialState({ panel: { open: true, activeTab: 'overview' } });
+  const fixture = createStablePanelFixture(() => state);
+  const trigger = { focus() {} };
+  fixture.documentRef.activeElement = trigger;
+
+  mountPanel({ documentRef: fixture.documentRef, getState: () => state });
+
+  assert.equal(fixture.documentRef.activeElement, fixture.panel);
+  assert.deepEqual(fixture.panel.focusCalls, [[{ preventScroll: true }]]);
+});
+
+test('mountPanel soft-fails hostile focus getters and methods', () => {
+  for (const panelFocusFailure of ['getter', 'call']) {
+    const state = createInitialState({ panel: { open: true, activeTab: 'debug' } });
+    const fixture = createStablePanelFixture(() => state, { panelFocusFailure });
+    fixture.documentRef.activeElement = { focus() {} };
+
+    assert.doesNotThrow(() => mountPanel({ documentRef: fixture.documentRef, getState: () => state }));
+    assert.equal(
+      fixture.documentRef.activeElement,
+      fixture.tabs.find((tab) => tab.dataset.tab === 'debug'),
+      panelFocusFailure
+    );
+  }
+
+  let state = createInitialState({ panel: { open: false, activeTab: 'overview' } });
+  const fixture = createStablePanelFixture(() => state);
+  let focusReads = 0;
+  const trigger = {};
+  Object.defineProperty(trigger, 'focus', {
+    get() {
+      focusReads += 1;
+      throw new Error('trigger focus getter failed');
+    }
+  });
+  fixture.documentRef.activeElement = trigger;
+  const mounted = mountPanel({ documentRef: fixture.documentRef, getState: () => state });
+  state = createInitialState({ panel: { open: true, activeTab: 'overview' } });
+  assert.doesNotThrow(() => mounted.render());
+  state = createInitialState({ panel: { open: false, activeTab: 'overview' } });
+  assert.doesNotThrow(() => mounted.render());
+  assert.equal(focusReads, 1);
 });
 
 test('mountPanel preserves duplicate production scroll keys by DOM order across search renders', () => {

@@ -635,6 +635,22 @@ test('mountPanel soft-fails when required document APIs are missing', () => {
   assert.equal(mounted.render(), false);
 });
 
+test('mountPanel soft-fails when the getElementById method getter throws', () => {
+  const documentRef = {};
+  Object.defineProperty(documentRef, 'getElementById', {
+    get() {
+      throw new Error('method getter failed');
+    }
+  });
+  let mounted;
+
+  assert.doesNotThrow(() => {
+    mounted = mountPanel({ documentRef });
+  });
+  assert.equal(mounted.root, null);
+  assert.equal(mounted.render(), false);
+});
+
 test('mountPanel render soft-fails when root query APIs are missing', () => {
   const root = {
     innerHTML: '',
@@ -824,6 +840,59 @@ test('mountPanel still binds normal handlers', () => {
     }],
     ['captured', { ruleTemplateId: 'airp-scene-default' }]
   ]);
+});
+
+test('mountPanel isolates throwing dataset field getters when listeners run', () => {
+  const makeNode = (field) => {
+    const dataset = {};
+    Object.defineProperty(dataset, field, {
+      get() {
+        throw new Error(`${field} getter failed`);
+      }
+    });
+    return {
+      dataset,
+      checked: true,
+      listeners: new Map(),
+      addEventListener(event, listener) {
+        this.listeners.set(event, listener);
+      },
+      emit(event) {
+        this.listeners.get(event)?.();
+      }
+    };
+  };
+  const tab = makeNode('tab');
+  const entry = makeNode('worldInfoEntry');
+  const root = {
+    innerHTML: '',
+    querySelector: () => null,
+    querySelectorAll(selector) {
+      if (selector === '[data-tab]') return [tab];
+      if (selector === '[data-world-info-entry]') return [entry];
+      return [];
+    }
+  };
+  const tabValues = [];
+  const entryValues = [];
+
+  mountPanel({
+    documentRef: { getElementById: () => root },
+    getState: () => createInitialState({ panel: { open: true, activeTab: 'rules' } }),
+    onTab(value) {
+      tabValues.push(value);
+      throw new Error('tab callback failed');
+    },
+    onWorldInfoRuleToggleEntry(uid, checked) {
+      entryValues.push([uid, checked]);
+      throw new Error('entry callback failed');
+    }
+  });
+
+  assert.doesNotThrow(() => tab.emit('click'));
+  assert.doesNotThrow(() => entry.emit('change'));
+  assert.deepEqual(tabValues, [undefined]);
+  assert.deepEqual(entryValues, [[undefined, true]]);
 });
 
 test('mountPanel binds world-info rule controls once per event', () => {
@@ -1060,6 +1129,7 @@ function createStablePanelFixture(getState, options = {}) {
   let rootHtml = '';
   let rootWrites = 0;
   let bodyWrites = 0;
+  let remainingRootWriteFailures = options.rootWriteFailures ?? 0;
   let documentRef;
 
   function makeEventNode(dataset = {}) {
@@ -1108,8 +1178,18 @@ function createStablePanelFixture(getState, options = {}) {
     input.selectionStart = value.length;
     input.selectionEnd = value.length;
     input.selectionDirection = 'none';
-    input.focus = () => {
+    input.focusCalls = [];
+    input.focus = (...args) => {
+      input.focusCalls.push(args);
+      if (options.focusRejectsOptions && args.length > 0) {
+        throw new Error('focus options unsupported');
+      }
       documentRef.activeElement = input;
+      if (options.focusMutatesScroll && shell) {
+        shell.body.scrollTop = 999;
+        const namedScroll = shell.body.currentNamedScroll();
+        if (namedScroll) namedScroll.scrollTop = 999;
+      }
     };
     input.setSelectionRange = (start, end, direction = 'none') => {
       input.selectionStart = start;
@@ -1207,6 +1287,10 @@ function createStablePanelFixture(getState, options = {}) {
     set innerHTML(value) {
       rootWrites += 1;
       rootHtml = String(value);
+      if (remainingRootWriteFailures > 0) {
+        remainingRootWriteFailures -= 1;
+        throw new Error('root write failed');
+      }
       if (shell && options.preserveShellOnRootWrite) {
         shell.body.innerHTML = rootHtml;
         return;
@@ -1235,6 +1319,10 @@ function createStablePanelFixture(getState, options = {}) {
     }
   };
   documentRef = { activeElement: null, getElementById: () => root };
+  if (options.prepopulateShell) {
+    rootHtml = renderPanelHtml(getState());
+    createShell(rootHtml);
+  }
 
   return {
     root,
@@ -1277,6 +1365,45 @@ function createStablePanelFixture(getState, options = {}) {
     }
   };
 }
+
+test('mountPanel fully renders once before patching a pre-existing complete shell', () => {
+  const state = createInitialState({ panel: { open: true, activeTab: 'overview' } });
+  const fixture = createStablePanelFixture(() => state, { prepopulateShell: true });
+  const preExistingPanel = fixture.panel;
+  const mounted = mountPanel({ documentRef: fixture.documentRef, getState: () => state });
+  const mountedPanel = fixture.panel;
+  const mountedTabs = fixture.tabsNode;
+
+  assert.equal(fixture.rootWrites, 1);
+  assert.notEqual(mountedPanel, preExistingPanel);
+
+  assert.equal(mounted.render(), true);
+  assert.equal(fixture.rootWrites, 1);
+  assert.equal(fixture.panel, mountedPanel);
+  assert.equal(fixture.tabsNode, mountedTabs);
+});
+
+test('mountPanel retries its first full render after the initial root write fails', () => {
+  const state = createInitialState({ panel: { open: true, activeTab: 'overview' } });
+  const fixture = createStablePanelFixture(() => state, {
+    prepopulateShell: true,
+    rootWriteFailures: 1
+  });
+  const preExistingPanel = fixture.panel;
+  const mounted = mountPanel({ documentRef: fixture.documentRef, getState: () => state });
+
+  assert.equal(fixture.rootWrites, 1);
+  assert.equal(fixture.panel, preExistingPanel);
+
+  assert.equal(mounted.render(), true);
+  assert.equal(fixture.rootWrites, 2);
+  assert.notEqual(fixture.panel, preExistingPanel);
+  const renderedPanel = fixture.panel;
+
+  assert.equal(mounted.render(), true);
+  assert.equal(fixture.rootWrites, 2);
+  assert.equal(fixture.panel, renderedPanel);
+});
 
 test('mountPanel patches a complete shell without replacing panel or tabs', () => {
   let state = createInitialState({ panel: { open: true, activeTab: 'overview' } });
@@ -1378,6 +1505,46 @@ test('mountPanel restores focus and selection after a shell body patch', () => {
     [fixture.controls.search.selectionStart, fixture.controls.search.selectionEnd, fixture.controls.search.selectionDirection],
     [2, 4, 'forward']
   );
+});
+
+test('mountPanel restores scrolling after compatible focus fallback changes scroll positions', () => {
+  let state = createInitialState({
+    panel: { open: true, activeTab: 'rules' },
+    ruleView: 'world-info',
+    worldInfoCatalog: {
+      worldRef: 'named:Lore',
+      worldName: 'Lore',
+      entries: [{ uid: '1', displayName: 'Hero', content: 'A' }]
+    },
+    worldInfoRuleEditor: {
+      view: 'edit',
+      editingId: 'rule-1',
+      search: '',
+      draft: { id: 'rule-1', name: 'Rule', mode: 'include', worldRef: 'named:Lore', entryUids: [] }
+    }
+  });
+  const fixture = createStablePanelFixture(() => state, {
+    focusMutatesScroll: true,
+    focusRejectsOptions: true
+  });
+  const mounted = mountPanel({ documentRef: fixture.documentRef, getState: () => state });
+  const firstSearch = fixture.controls.search;
+
+  firstSearch.focus();
+  firstSearch.setSelectionRange(1, 3, 'forward');
+  fixture.body.scrollTop = 240;
+  fixture.namedScroll.scrollTop = 85;
+  state = {
+    ...state,
+    worldInfoRuleEditor: { ...state.worldInfoRuleEditor, search: 'Hero' }
+  };
+
+  assert.equal(mounted.render(), true);
+  assert.equal(fixture.documentRef.activeElement, fixture.controls.search);
+  assert.deepEqual(fixture.controls.search.focusCalls.map((args) => args.length), [1, 0]);
+  assert.deepEqual(fixture.controls.search.focusCalls[0][0], { preventScroll: true });
+  assert.equal(fixture.body.scrollTop, 240);
+  assert.equal(fixture.namedScroll.scrollTop, 85);
 });
 
 test('mountPanel deduplicates stable click listeners and binds replacement body controls once', () => {

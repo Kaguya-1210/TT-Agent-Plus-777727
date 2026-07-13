@@ -89,13 +89,17 @@ export function mountPanel(options = {}) {
   } = config;
 
   const emptyMount = () => ({ root: null, render: () => false });
-  if (!isRecord(documentRef) || typeof documentRef.getElementById !== 'function') {
+  if (!isRecord(documentRef)) {
+    return emptyMount();
+  }
+  const getElementById = safeProperty(documentRef, 'getElementById');
+  if (typeof getElementById !== 'function') {
     return emptyMount();
   }
 
   let root;
   try {
-    root = documentRef.getElementById(rootId);
+    root = getElementById.call(documentRef, rootId);
   } catch (error) {
     warnDebug(debug, 'Unable to find panel root', error);
     return emptyMount();
@@ -123,6 +127,7 @@ export function mountPanel(options = {}) {
   }
 
   const eventBindings = new WeakMap();
+  let hasRendered = false;
   let renderedActiveTab = null;
 
   function patchPanelShell(root, state, debugEntries) {
@@ -173,9 +178,9 @@ export function mountPanel(options = {}) {
     }
     if (!tabsUpdated) return false;
 
-    restorePanelScroll(body, scrollSnapshot, sameActiveTab, debug);
-    safeScrollIntoView(activeTab, debug);
     restorePanelFocus(root, focusSnapshot, debug);
+    safeScrollIntoView(activeTab, debug);
+    restorePanelScroll(body, scrollSnapshot, sameActiveTab, debug);
     renderedActiveTab = state.panel.activeTab;
     return true;
   }
@@ -185,15 +190,18 @@ export function mountPanel(options = {}) {
     const state = safeNormalizeState(safeGet(getState, undefined, debug), debug);
     const debugEntries = records(safeGet(getDebugEntries, [], debug));
     let patched = false;
-    try {
-      patched = patchPanelShell(root, state, debugEntries);
-    } catch (error) {
-      warnDebug(debug, 'Unable to patch panel shell', error);
+    if (hasRendered) {
+      try {
+        patched = patchPanelShell(root, state, debugEntries);
+      } catch (error) {
+        warnDebug(debug, 'Unable to patch panel shell', error);
+      }
     }
 
     if (!patched) {
       try {
         root.innerHTML = renderPanelHtml(state, debugEntries);
+        hasRendered = true;
         renderedActiveTab = state.panel.activeTab;
       } catch (error) {
         warnDebug(debug, 'Unable to render panel', error);
@@ -210,16 +218,16 @@ export function mountPanel(options = {}) {
 
     let bound = true;
     bound = bindEach(root, '[data-tab]', (button) => () => {
-      safeInvoke(onTab, debug, safeDataset(button).tab);
+      safeInvoke(onTab, debug, safeDatasetValue(button, 'tab'));
     }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-ttap-close]', () => () => {
       safeInvoke(onClose, debug);
     }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-approve-task]', (button) => () => {
-      safeInvoke(onApprove, debug, safeDataset(button).approveTask);
+      safeInvoke(onApprove, debug, safeDatasetValue(button, 'approveTask'));
     }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-cancel-task]', (button) => () => {
-      safeInvoke(onCancel, debug, safeDataset(button).cancelTask);
+      safeInvoke(onCancel, debug, safeDatasetValue(button, 'cancelTask'));
     }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-dispatch-manual]', () => () => {
       safeInvoke(onManualDispatch, debug, readManualDispatchPayload(root));
@@ -231,16 +239,16 @@ export function mountPanel(options = {}) {
       safeInvoke(onExportDebug, debug);
     }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-rule-view]', (button) => () => {
-      safeInvoke(onRuleView, debug, safeDataset(button).ruleView);
+      safeInvoke(onRuleView, debug, safeDatasetValue(button, 'ruleView'));
     }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-new-world-info-rule]', () => () => {
       safeInvoke(onNewWorldInfoRule, debug);
     }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-edit-world-info-rule]', (button) => () => {
-      safeInvoke(onEditWorldInfoRule, debug, safeDataset(button).editWorldInfoRule);
+      safeInvoke(onEditWorldInfoRule, debug, safeDatasetValue(button, 'editWorldInfoRule'));
     }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-delete-world-info-rule]', (button) => () => {
-      safeInvoke(onDeleteWorldInfoRule, debug, safeDataset(button).deleteWorldInfoRule);
+      safeInvoke(onDeleteWorldInfoRule, debug, safeDatasetValue(button, 'deleteWorldInfoRule'));
     }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-world-info-select-all]', () => () => {
       safeInvoke(onWorldInfoRuleSelectAll, debug);
@@ -258,13 +266,14 @@ export function mountPanel(options = {}) {
       safeInvoke(onWorldInfoRuleSearch, debug, readNodeValue(input));
     }, eventBindings, debug) && bound;
     bound = bindInputEach(root, '[data-world-info-entry]', 'change', (input) => () => {
-      safeInvoke(onWorldInfoRuleToggleEntry, debug, safeDataset(input).worldInfoEntry, safeProperty(input, 'checked') === true);
+      safeInvoke(onWorldInfoRuleToggleEntry, debug,
+        safeDatasetValue(input, 'worldInfoEntry'), safeProperty(input, 'checked') === true);
     }, eventBindings, debug) && bound;
     bound = bindInputEach(root, '[data-world-info-rule-name]', 'input', (input) => () => {
       safeInvoke(onWorldInfoRuleDraft, debug, { name: readNodeValue(input) });
     }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-world-info-rule-mode]', (button) => () => {
-      safeInvoke(onWorldInfoRuleDraft, debug, { mode: safeDataset(button).worldInfoRuleMode });
+      safeInvoke(onWorldInfoRuleDraft, debug, { mode: safeDatasetValue(button, 'worldInfoRuleMode') });
     }, eventBindings, debug) && bound;
 
     return bound;
@@ -780,7 +789,11 @@ function restorePanelFocus(root, snapshot, debug) {
     const control = safeQuery(root, snapshot.selector, debug);
     const focus = safeProperty(control, 'focus');
     if (!control || typeof focus !== 'function') return false;
-    focus.call(control);
+    try {
+      focus.call(control, { preventScroll: true });
+    } catch {
+      focus.call(control);
+    }
     const setSelectionRange = safeProperty(control, 'setSelectionRange');
     if (snapshot.start !== null && snapshot.end !== null && typeof setSelectionRange === 'function') {
       setSelectionRange.call(control, snapshot.start, snapshot.end, snapshot.direction);
@@ -843,6 +856,10 @@ function normalizeUid(value) {
 function safeDataset(node) {
   const dataset = safeProperty(node, 'dataset');
   return isRecord(dataset) ? dataset : {};
+}
+
+function safeDatasetValue(node, key) {
+  return safeProperty(safeDataset(node), key);
 }
 
 function safeProperty(value, key) {

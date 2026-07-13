@@ -122,80 +122,150 @@ export function mountPanel(options = {}) {
     }
   }
 
-  const inputBindings = new WeakMap();
+  const eventBindings = new WeakMap();
+  let renderedActiveTab = null;
+
+  function patchPanelShell(root, state, debugEntries) {
+    const panel = safeQuery(root, '.ttap-panel', debug);
+    const backdrop = safeQuery(root, '.ttap-backdrop', debug);
+    const title = safeQuery(root, '[data-workspace-title]', debug);
+    const body = safeQuery(root, '[data-workspace-body]', debug);
+    if (!panel || !backdrop || !title || !body || new Set([panel, backdrop, title, body]).size !== 4) {
+      return false;
+    }
+
+    const focusSnapshot = capturePanelFocus(documentRef, root);
+    const scrollSnapshot = capturePanelScroll(body, debug);
+    const panelDataset = safeDataset(panel);
+    const previousActiveTab = renderedActiveTab ?? toText(safeProperty(panelDataset, 'activeTab'));
+    const sameActiveTab = previousActiveTab === state.panel.activeTab;
+    const theme = normalizeTheme(state.settings.theme);
+
+    const panelUpdated = [
+      safeSetData(panel, 'open', 'data-open', state.panel.open ? 'true' : 'false', debug),
+      safeSetData(panel, 'ttapTheme', 'data-ttap-theme', theme, debug),
+      safeSetData(panel, 'activeTab', 'data-active-tab', state.panel.activeTab, debug)
+    ].every(Boolean);
+    if (!panelUpdated
+      || !safeSetProperty(backdrop, 'hidden', !state.panel.open, debug)
+      || !safeSetProperty(title, 'textContent', activeTabLabel(state.panel.activeTab), debug)) {
+      return false;
+    }
+
+    const themeState = safeQuery(root, '.ttap-theme-state', debug);
+    if (themeState) safeSetProperty(themeState, 'textContent', themeLabel(theme), debug);
+
+    try {
+      body.innerHTML = renderActiveTab(state, debugEntries);
+    } catch (error) {
+      warnDebug(debug, 'Unable to patch panel workspace', error);
+      return false;
+    }
+
+    const tabs = safeQueryAll(root, '[data-tab]', debug);
+    if (tabs === null) return false;
+    let activeTab = null;
+    let tabsUpdated = true;
+    for (const tab of tabs) {
+      const selected = safeProperty(safeDataset(tab), 'tab') === state.panel.activeTab;
+      tabsUpdated = safeSetAttribute(tab, 'aria-selected', String(selected), debug) && tabsUpdated;
+      if (selected) activeTab = tab;
+    }
+    if (!tabsUpdated) return false;
+
+    restorePanelScroll(body, scrollSnapshot, sameActiveTab, debug);
+    safeScrollIntoView(activeTab, debug);
+    restorePanelFocus(root, focusSnapshot, debug);
+    renderedActiveTab = state.panel.activeTab;
+    return true;
+  }
 
   function render() {
     const focusSnapshot = capturePanelFocus(documentRef, root);
+    const state = safeNormalizeState(safeGet(getState, undefined, debug), debug);
+    const debugEntries = records(safeGet(getDebugEntries, [], debug));
+    let patched = false;
     try {
-      root.innerHTML = renderPanelHtml(safeGet(getState, undefined, debug), safeGet(getDebugEntries, [], debug));
+      patched = patchPanelShell(root, state, debugEntries);
     } catch (error) {
-      warnDebug(debug, 'Unable to render panel', error);
-      return false;
+      warnDebug(debug, 'Unable to patch panel shell', error);
     }
 
-    if (typeof root.querySelectorAll !== 'function' || typeof root.querySelector !== 'function') {
+    if (!patched) {
+      try {
+        root.innerHTML = renderPanelHtml(state, debugEntries);
+        renderedActiveTab = state.panel.activeTab;
+      } catch (error) {
+        warnDebug(debug, 'Unable to render panel', error);
+        return false;
+      }
+      restorePanelFocus(root, focusSnapshot, debug);
+    }
+
+    if (typeof safeProperty(root, 'querySelectorAll') !== 'function'
+      || typeof safeProperty(root, 'querySelector') !== 'function') {
+      warnDebug(debug, 'Panel root query APIs unavailable', new Error('querySelector APIs unavailable'));
       return false;
     }
-    restorePanelFocus(root, focusSnapshot, debug);
 
     let bound = true;
     bound = bindEach(root, '[data-tab]', (button) => () => {
       safeInvoke(onTab, debug, safeDataset(button).tab);
-    }, debug) && bound;
+    }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-ttap-close]', () => () => {
       safeInvoke(onClose, debug);
-    }, debug) && bound;
+    }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-approve-task]', (button) => () => {
       safeInvoke(onApprove, debug, safeDataset(button).approveTask);
-    }, debug) && bound;
+    }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-cancel-task]', (button) => () => {
       safeInvoke(onCancel, debug, safeDataset(button).cancelTask);
-    }, debug) && bound;
+    }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-dispatch-manual]', () => () => {
       safeInvoke(onManualDispatch, debug, readManualDispatchPayload(root));
-    }, debug) && bound;
+    }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-dispatch-captured]', () => () => {
       safeInvoke(onCapturedDispatch, debug, readCapturedDispatchPayload(root));
-    }, debug) && bound;
+    }, eventBindings, debug) && bound;
     bound = bindOne(root, '[data-export-debug]', () => {
       safeInvoke(onExportDebug, debug);
-    }, debug) && bound;
+    }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-rule-view]', (button) => () => {
       safeInvoke(onRuleView, debug, safeDataset(button).ruleView);
-    }, debug) && bound;
+    }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-new-world-info-rule]', () => () => {
       safeInvoke(onNewWorldInfoRule, debug);
-    }, debug) && bound;
+    }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-edit-world-info-rule]', (button) => () => {
       safeInvoke(onEditWorldInfoRule, debug, safeDataset(button).editWorldInfoRule);
-    }, debug) && bound;
+    }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-delete-world-info-rule]', (button) => () => {
       safeInvoke(onDeleteWorldInfoRule, debug, safeDataset(button).deleteWorldInfoRule);
-    }, debug) && bound;
+    }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-world-info-select-all]', () => () => {
       safeInvoke(onWorldInfoRuleSelectAll, debug);
-    }, debug) && bound;
+    }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-world-info-invert]', () => () => {
       safeInvoke(onWorldInfoRuleInvert, debug);
-    }, debug) && bound;
+    }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-save-world-info-rule]', () => () => {
       safeInvoke(onSaveWorldInfoRule, debug);
-    }, debug) && bound;
+    }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-cancel-world-info-rule]', () => () => {
       safeInvoke(onCancelWorldInfoRule, debug);
-    }, debug) && bound;
+    }, eventBindings, debug) && bound;
     bound = bindInputEach(root, '[data-world-info-search]', 'input', (input) => () => {
       safeInvoke(onWorldInfoRuleSearch, debug, readNodeValue(input));
-    }, inputBindings, debug) && bound;
+    }, eventBindings, debug) && bound;
     bound = bindInputEach(root, '[data-world-info-entry]', 'change', (input) => () => {
-      safeInvoke(onWorldInfoRuleToggleEntry, debug, safeDataset(input).worldInfoEntry, input?.checked === true);
-    }, inputBindings, debug) && bound;
+      safeInvoke(onWorldInfoRuleToggleEntry, debug, safeDataset(input).worldInfoEntry, safeProperty(input, 'checked') === true);
+    }, eventBindings, debug) && bound;
     bound = bindInputEach(root, '[data-world-info-rule-name]', 'input', (input) => () => {
       safeInvoke(onWorldInfoRuleDraft, debug, { name: readNodeValue(input) });
-    }, inputBindings, debug) && bound;
+    }, eventBindings, debug) && bound;
     bound = bindEach(root, '[data-world-info-rule-mode]', (button) => () => {
       safeInvoke(onWorldInfoRuleDraft, debug, { mode: safeDataset(button).worldInfoRuleMode });
-    }, debug) && bound;
+    }, eventBindings, debug) && bound;
 
     return bound;
   }
@@ -579,64 +649,109 @@ function normalizeTheme(theme) {
   return ['system', 'light', 'dark'].includes(theme) ? theme : 'system';
 }
 
+function safeNormalizeState(state, debug) {
+  try {
+    return normalizeState(state);
+  } catch (error) {
+    warnDebug(debug, 'Unable to normalize panel state', error);
+    return normalizeState(undefined);
+  }
+}
+
 function records(value, fallback = []) {
   const items = Array.isArray(value) ? value.filter(isRecord) : [];
   if (items.length) return items;
   return Array.isArray(fallback) ? fallback.filter(isRecord).map((item) => ({ ...item })) : [];
 }
 
-function bindEach(root, selector, listenerFor, debug) {
-  let nodes;
-  try {
-    nodes = Array.from(root.querySelectorAll(selector) || []);
-  } catch (error) {
-    warnDebug(debug, `Unable to bind ${selector}`, error);
-    return false;
+function capturePanelScroll(body, debug) {
+  const keyed = new Map();
+  for (const node of safeQueryAll(body, '[data-scroll-key]', debug) ?? []) {
+    const key = toText(safeProperty(safeDataset(node), 'scrollKey')).trim();
+    const scrollTop = finiteScrollTop(node);
+    if (key && scrollTop !== null) keyed.set(key, scrollTop);
   }
-
-  for (const node of nodes) {
-    if (node && typeof node.addEventListener === 'function') {
-      node.addEventListener('click', listenerFor(node));
-    }
-  }
-  return true;
+  return { workspace: finiteScrollTop(body), keyed };
 }
 
-function bindOne(root, selector, listener, debug) {
-  let node;
-  try {
-    node = root.querySelector(selector);
-  } catch (error) {
-    warnDebug(debug, `Unable to bind ${selector}`, error);
-    return false;
+function restorePanelScroll(body, snapshot, sameActiveTab, debug) {
+  if (!sameActiveTab) {
+    safeSetProperty(body, 'scrollTop', 0, debug);
+    return;
   }
 
-  if (node && typeof node.addEventListener === 'function') {
-    node.addEventListener('click', listener);
+  if (snapshot.workspace !== null) {
+    safeSetProperty(body, 'scrollTop', snapshot.workspace, debug);
   }
-  return true;
+  for (const node of safeQueryAll(body, '[data-scroll-key]', debug) ?? []) {
+    const key = toText(safeProperty(safeDataset(node), 'scrollKey')).trim();
+    if (key && snapshot.keyed.has(key)) {
+      safeSetProperty(node, 'scrollTop', snapshot.keyed.get(key), debug);
+    }
+  }
+}
+
+function finiteScrollTop(node) {
+  const value = safeProperty(node, 'scrollTop');
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function safeScrollIntoView(node, debug) {
+  const scrollIntoView = safeProperty(node, 'scrollIntoView');
+  if (typeof scrollIntoView !== 'function') return false;
+  try {
+    scrollIntoView.call(node, { block: 'nearest', inline: 'nearest' });
+    return true;
+  } catch (error) {
+    warnDebug(debug, 'Unable to reveal active panel tab', error);
+    return false;
+  }
+}
+
+function bindEach(root, selector, listenerFor, bindings, debug) {
+  const nodes = safeQueryAll(root, selector, debug);
+  if (nodes === null) return false;
+
+  let bound = true;
+  for (const node of nodes) {
+    bound = bindNodeEvent(node, 'click', () => listenerFor(node), bindings, selector, debug) && bound;
+  }
+  return bound;
+}
+
+function bindOne(root, selector, listener, bindings, debug) {
+  const node = safeQuery(root, selector, debug);
+  if (!node) return true;
+  return bindNodeEvent(node, 'click', () => listener, bindings, selector, debug);
 }
 
 function bindInputEach(root, selector, eventName, listenerFor, bindings, debug) {
-  let nodes;
+  const nodes = safeQueryAll(root, selector, debug);
+  if (nodes === null) return false;
+
+  let bound = true;
+  for (const node of nodes) {
+    bound = bindNodeEvent(node, eventName, () => listenerFor(node), bindings, selector, debug) && bound;
+  }
+  return bound;
+}
+
+function bindNodeEvent(node, eventName, createListener, bindings, selector, debug) {
+  const addEventListener = safeProperty(node, 'addEventListener');
+  if (typeof addEventListener !== 'function') return true;
+
+  let nodeBindings;
   try {
-    nodes = Array.from(root.querySelectorAll(selector) || []);
+    nodeBindings = bindings.get(node) ?? new Set();
+    if (nodeBindings.has(eventName)) return true;
+    addEventListener.call(node, eventName, createListener());
+    nodeBindings.add(eventName);
+    bindings.set(node, nodeBindings);
+    return true;
   } catch (error) {
     warnDebug(debug, `Unable to bind ${selector}`, error);
     return false;
   }
-
-  for (const node of nodes) {
-    if (node && typeof node.addEventListener === 'function') {
-      const bindingKey = `${selector}:${eventName}`;
-      const nodeBindings = bindings.get(node) ?? new Set();
-      if (nodeBindings.has(bindingKey)) continue;
-      node.addEventListener(eventName, listenerFor(node));
-      nodeBindings.add(bindingKey);
-      bindings.set(node, nodeBindings);
-    }
-  }
-  return true;
 }
 
 function capturePanelFocus(documentRef, root) {
@@ -662,11 +777,13 @@ function capturePanelFocus(documentRef, root) {
 function restorePanelFocus(root, snapshot, debug) {
   if (!snapshot) return false;
   try {
-    const control = root.querySelector(snapshot.selector);
-    if (!control || typeof control.focus !== 'function') return false;
-    control.focus();
-    if (snapshot.start !== null && snapshot.end !== null && typeof control.setSelectionRange === 'function') {
-      control.setSelectionRange(snapshot.start, snapshot.end, snapshot.direction);
+    const control = safeQuery(root, snapshot.selector, debug);
+    const focus = safeProperty(control, 'focus');
+    if (!control || typeof focus !== 'function') return false;
+    focus.call(control);
+    const setSelectionRange = safeProperty(control, 'setSelectionRange');
+    if (snapshot.start !== null && snapshot.end !== null && typeof setSelectionRange === 'function') {
+      setSelectionRange.call(control, snapshot.start, snapshot.end, snapshot.direction);
     }
     return true;
   } catch (error) {
@@ -696,16 +813,13 @@ function formatCount(value) {
 }
 
 function readControlValue(root, selector) {
-  try {
-    const node = root?.querySelector?.(selector);
-    return typeof node?.value === 'string' ? node.value : '';
-  } catch {
-    return '';
-  }
+  const node = safeQuery(root, selector);
+  return readNodeValue(node);
 }
 
 function readNodeValue(node) {
-  return typeof node?.value === 'string' ? node.value : '';
+  const value = safeProperty(node, 'value');
+  return typeof value === 'string' ? value : '';
 }
 
 function recordsAsValues(value) {
@@ -727,7 +841,8 @@ function normalizeUid(value) {
 }
 
 function safeDataset(node) {
-  return isRecord(node?.dataset) ? node.dataset : {};
+  const dataset = safeProperty(node, 'dataset');
+  return isRecord(dataset) ? dataset : {};
 }
 
 function safeProperty(value, key) {
@@ -735,6 +850,63 @@ function safeProperty(value, key) {
     return value?.[key];
   } catch {
     return undefined;
+  }
+}
+
+function safeQuery(root, selector, debug) {
+  const querySelector = safeProperty(root, 'querySelector');
+  if (typeof querySelector !== 'function') return null;
+  try {
+    return querySelector.call(root, selector) ?? null;
+  } catch (error) {
+    warnDebug(debug, `Unable to query ${selector}`, error);
+    return null;
+  }
+}
+
+function safeQueryAll(root, selector, debug) {
+  const querySelectorAll = safeProperty(root, 'querySelectorAll');
+  if (typeof querySelectorAll !== 'function') return null;
+  try {
+    return Array.from(querySelectorAll.call(root, selector) || []);
+  } catch (error) {
+    warnDebug(debug, `Unable to query ${selector}`, error);
+    return null;
+  }
+}
+
+function safeSetData(node, key, attribute, value, debug) {
+  const dataset = safeProperty(node, 'dataset');
+  if (isRecord(dataset)) {
+    try {
+      dataset[key] = value;
+      return true;
+    } catch (error) {
+      warnDebug(debug, `Unable to update ${attribute}`, error);
+    }
+  }
+  return safeSetAttribute(node, attribute, value, debug);
+}
+
+function safeSetAttribute(node, name, value, debug) {
+  const setAttribute = safeProperty(node, 'setAttribute');
+  if (typeof setAttribute !== 'function') return false;
+  try {
+    setAttribute.call(node, name, value);
+    return true;
+  } catch (error) {
+    warnDebug(debug, `Unable to update ${name}`, error);
+    return false;
+  }
+}
+
+function safeSetProperty(node, key, value, debug) {
+  try {
+    node[key] = value;
+    return true;
+  } catch (error) {
+    warnDebug(debug, `Unable to update ${key}`, error);
+    return false;
   }
 }
 

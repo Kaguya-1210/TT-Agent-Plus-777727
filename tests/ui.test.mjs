@@ -105,6 +105,68 @@ test('malformed tabs cannot replace canonical navigation or split the active wor
   assert.doesNotMatch(html, /constructor|异常标签/);
 });
 
+test('panel navigation is isolated from post-load PANEL_TABS entry mutations', () => {
+  const firstTab = PANEL_TABS[0];
+  const originalId = firstTab.id;
+  const originalLabel = firstTab.label;
+
+  try {
+    firstTab.id = 'mutated-overview';
+    firstTab.label = '篡改总览';
+    const html = renderPanelHtml(createInitialState({
+      panel: { open: true, activeTab: 'overview' }
+    }));
+
+    assert.equal((html.match(/class="ttap-tab"/g) ?? []).length, 6);
+    assert.match(html, /<button class="ttap-tab" data-tab="overview"[^>]*aria-selected="true"><i class="ttap-tab-icon fa-solid fa-gauge-high"[^>]*><\/i><span>总览<\/span><\/button>/);
+    assert.match(html, /<h1 data-workspace-title>总览<\/h1>/);
+    assert.match(html, /class="ttap-overview-hero"/);
+    assert.doesNotMatch(html, /mutated-overview|篡改总览/);
+  } finally {
+    firstTab.id = originalId;
+    firstTab.label = originalLabel;
+  }
+});
+
+test('activeTab accessor is read once for selected tab title and body', () => {
+  let reads = 0;
+  const html = renderPanelHtml({
+    panel: {
+      open: true,
+      get activeTab() {
+        reads += 1;
+        return reads === 1 ? 'tasks' : 'constructor';
+      }
+    },
+    settings: { theme: 'system' }
+  });
+
+  assert.equal(reads, 1);
+  assert.match(html, /data-tab="tasks"[^>]*aria-selected="true"/);
+  assert.match(html, /<h1 data-workspace-title>任务<\/h1>/);
+  assert.match(html, /class="ttap-card ttap-manual-dispatch"/);
+  assert.doesNotMatch(html, /class="ttap-overview-hero"|constructor/);
+});
+
+test('throwing activeTab accessors safely fall back to overview', () => {
+  let reads = 0;
+  const html = renderPanelHtml({
+    panel: {
+      open: true,
+      get activeTab() {
+        reads += 1;
+        throw new Error('unsafe getter');
+      }
+    },
+    settings: { theme: 'system' }
+  });
+
+  assert.equal(reads, 1);
+  assert.match(html, /data-tab="overview"[^>]*aria-selected="true"/);
+  assert.match(html, /<h1 data-workspace-title>总览<\/h1>/);
+  assert.match(html, /class="ttap-overview-hero"/);
+});
+
 test('debug tab renders export button when active', () => {
   const state = createInitialState({ panel: { open: true, activeTab: 'debug', badge: null } });
   const html = renderPanelHtml(state, [{ level: 'info', channel: 'test', message: 'hello', seq: 1 }]);
@@ -620,6 +682,43 @@ test('mountPanel handler callbacks are optional and isolated from thrown errors'
   for (const listener of missingListeners) {
     assert.doesNotThrow(() => listener());
   }
+});
+
+test('mountPanel binds backdrop mobile and desktop close markers independently', () => {
+  const makeCloseNode = (closeRole) => ({
+    dataset: { closeRole },
+    listeners: [],
+    addEventListener(event, listener) {
+      if (event === 'click') this.listeners.push(listener);
+    },
+    click() {
+      for (const listener of this.listeners) listener();
+    }
+  });
+  const backdrop = makeCloseNode('backdrop');
+  const mobileClose = makeCloseNode('mobile');
+  const desktopClose = makeCloseNode('desktop');
+  const closeNodes = [backdrop, mobileClose, desktopClose];
+  const root = {
+    innerHTML: '',
+    querySelectorAll: (selector) => selector === '[data-ttap-close]' ? closeNodes : [],
+    querySelector: () => null
+  };
+  let closeCalls = 0;
+
+  mountPanel({
+    documentRef: { getElementById: () => root },
+    getState: () => createInitialState({ panel: { open: true } }),
+    onClose: () => {
+      closeCalls += 1;
+    }
+  });
+
+  for (const node of closeNodes) {
+    assert.equal(node.listeners.length, 1);
+    node.click();
+  }
+  assert.equal(closeCalls, 3);
 });
 
 test('mountPanel still binds normal handlers', () => {

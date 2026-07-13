@@ -1,22 +1,27 @@
 import { DISPLAY_NAME, PANEL_TABS } from './constants.js';
 import { filterCatalogEntries } from './worldInfoRuleEditor.js';
 
-const TAB_ICONS = Object.freeze({
-  overview: 'fa-gauge-high',
-  tasks: 'fa-list-check',
-  rules: 'fa-wand-magic-sparkles',
-  cache: 'fa-box-archive',
-  debug: 'fa-bug',
-  settings: 'fa-gear'
-});
-const PANEL_TAB_IDS = new Set(PANEL_TABS.map((tab) => tab.id));
+const TAB_ICON_BY_ID = new Map([
+  ['overview', 'fa-gauge-high'],
+  ['tasks', 'fa-list-check'],
+  ['rules', 'fa-wand-magic-sparkles'],
+  ['cache', 'fa-box-archive'],
+  ['debug', 'fa-bug'],
+  ['settings', 'fa-gear']
+]);
+const CANONICAL_TABS = Object.freeze(PANEL_TABS.map((tab) => Object.freeze({
+  id: tab.id,
+  label: tab.label,
+  icon: TAB_ICON_BY_ID.get(tab.id)
+})));
+const DEFAULT_TAB = CANONICAL_TABS.find((tab) => tab.id === 'overview') ?? CANONICAL_TABS[0];
 
 export function renderPanelHtml(state, debugEntries = []) {
   const safeState = normalizeState(state);
   const safeDebugEntries = records(debugEntries);
-  const tabButtons = PANEL_TABS.map((tab) => {
+  const tabButtons = CANONICAL_TABS.map((tab) => {
     const active = tab.id === safeState.panel.activeTab ? ' aria-selected="true"' : ' aria-selected="false"';
-    return `<button class="ttap-tab" data-tab="${escapeHtml(tab.id)}" type="button" role="tab"${active}><i class="ttap-tab-icon fa-solid ${TAB_ICONS[tab.id]}" aria-hidden="true"></i><span>${escapeHtml(tab.label)}</span></button>`;
+    return `<button class="ttap-tab" data-tab="${escapeHtml(tab.id)}" type="button" role="tab"${active}><i class="ttap-tab-icon fa-solid ${tab.icon}" aria-hidden="true"></i><span>${escapeHtml(tab.label)}</span></button>`;
   }).join('');
   const hiddenAttr = safeState.panel.open ? '' : ' hidden';
   const theme = normalizeTheme(safeState.settings.theme);
@@ -42,7 +47,7 @@ export function renderPanelHtml(state, debugEntries = []) {
 }
 
 function activeTabLabel(activeTab) {
-  return PANEL_TABS.find((tab) => tab.id === activeTab)?.label ?? '总览';
+  return CANONICAL_TABS.find((tab) => tab.id === activeTab)?.label ?? DEFAULT_TAB.label;
 }
 
 function themeLabel(theme) {
@@ -550,11 +555,14 @@ function normalizeState(state) {
   const source = isRecord(state) ? state : {};
   const panel = isRecord(source.panel) ? source.panel : {};
   const settings = isRecord(source.settings) ? source.settings : {};
+  const requestedActiveTab = safeProperty(panel, 'activeTab');
 
   return {
     panel: {
       open: panel.open === true,
-      activeTab: PANEL_TAB_IDS.has(panel.activeTab) ? panel.activeTab : 'overview'
+      activeTab: CANONICAL_TABS.some((tab) => tab.id === requestedActiveTab)
+        ? requestedActiveTab
+        : DEFAULT_TAB.id
     },
     tasks: records(source.tasks),
     cacheEntries: records(source.cacheEntries),
@@ -725,6 +733,14 @@ function normalizeUid(value) {
 
 function safeDataset(node) {
   return isRecord(node?.dataset) ? node.dataset : {};
+}
+
+function safeProperty(value, key) {
+  try {
+    return value?.[key];
+  } catch {
+    return undefined;
+  }
 }
 
 function safeGet(getter, fallback, debug) {

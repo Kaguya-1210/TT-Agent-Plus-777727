@@ -1235,6 +1235,8 @@ function createStablePanelFixture(getState, options = {}) {
   let rootWrites = 0;
   let bodyWrites = 0;
   let remainingRootWriteFailures = options.rootWriteFailures ?? 0;
+  let remainingBodyInnerHtmlMutationFailures = 0;
+  let remainingBodyReplaceMutationFailures = 0;
   let documentRef;
 
   function makeEventNode(dataset = {}) {
@@ -1312,29 +1314,47 @@ function createStablePanelFixture(getState, options = {}) {
     let bodyHtml = '';
     let namedScrolls = [];
     let controls = {};
+    let childNodes = [];
 
-    function replaceBody(value) {
-      bodyWrites += 1;
-      bodyHtml = String(value);
-      const previousControls = controls;
-      const scrollKeys = [...bodyHtml.matchAll(/data-scroll-key="([^"]+)"/g)]
+    function parseBody(value, previousControls = {}) {
+      const html = String(value);
+      const scrollKeys = [...html.matchAll(/data-scroll-key="([^"]+)"/g)]
         .map((match) => match[1]);
       const effectiveKeys = options.duplicateScrollKey
         ? [options.duplicateScrollKey, options.duplicateScrollKey]
         : (scrollKeys.length ? scrollKeys : ['named-region']);
-      namedScrolls = effectiveKeys.map((scrollKey) => makeScrollNode({ scrollKey }));
-      controls = {};
-      if (bodyHtml.includes('data-export-debug')) {
-        controls.export = options.preserveBodyControls && previousControls.export
+      const nextNamedScrolls = effectiveKeys.map((scrollKey) => makeScrollNode({ scrollKey }));
+      const nextControls = {};
+      if (html.includes('data-export-debug')) {
+        nextControls.export = options.preserveBodyControls && previousControls.export
           ? previousControls.export
           : makeEventNode();
       }
-      if (bodyHtml.includes('data-world-info-search')) {
-        controls.search = makeInput({ worldInfoSearch: '' });
+      if (html.includes('data-world-info-search')) {
+        nextControls.search = makeInput({ worldInfoSearch: '' });
       }
-      if (bodyHtml.includes('data-world-info-rule-name')) {
-        controls.name = makeInput({ worldInfoRuleName: '' });
+      if (html.includes('data-world-info-rule-name')) {
+        nextControls.name = makeInput({ worldInfoRuleName: '' });
       }
+      if (html.includes('data-world-info-rule-mode')) {
+        nextControls.mode = makeEventNode({ worldInfoRuleMode: 'include' });
+      }
+      const content = { html, namedScrolls: nextNamedScrolls, controls: nextControls };
+      const contentNode = { content };
+      content.childNodes = [contentNode];
+      return content;
+    }
+
+    function installBody(content) {
+      bodyHtml = content.html;
+      namedScrolls = content.namedScrolls;
+      controls = content.controls;
+      childNodes = content.childNodes;
+    }
+
+    function replaceBody(value) {
+      bodyWrites += 1;
+      installBody(parseBody(value, controls));
     }
 
     Object.defineProperty(body, 'innerHTML', {
@@ -1344,13 +1364,49 @@ function createStablePanelFixture(getState, options = {}) {
       },
       set(value) {
         replaceBody(value);
+        if (remainingBodyInnerHtmlMutationFailures > 0) {
+          remainingBodyInnerHtmlMutationFailures -= 1;
+          throw new Error('body innerHTML write failed after mutation');
+        }
       }
     });
+    if (!options.lightweightBody) {
+      Object.defineProperty(body, 'childNodes', {
+        configurable: true,
+        get() {
+          return childNodes;
+        }
+      });
+      body.ownerDocument = {
+        createElement() {
+          const element = { content: { childNodes: [] } };
+          Object.defineProperty(element, 'innerHTML', {
+            configurable: true,
+            set(value) {
+              const content = parseBody(value, controls);
+              element.content.childNodes = content.childNodes;
+            }
+          });
+          return element;
+        }
+      };
+      body.replaceChildren = (...nodes) => {
+        bodyWrites += 1;
+        const content = nodes[0]?.content;
+        if (!content || nodes.length !== 1) throw new Error('unknown staged body nodes');
+        installBody(content);
+        if (remainingBodyReplaceMutationFailures > 0) {
+          remainingBodyReplaceMutationFailures -= 1;
+          throw new Error('replaceChildren failed after mutation');
+        }
+      };
+    }
     body.querySelectorAll = (selector) => {
       if (selector === '[data-scroll-key]') return namedScrolls;
       if (selector === '[data-export-debug]') return controls.export ? [controls.export] : [];
       if (selector === '[data-world-info-search]') return controls.search ? [controls.search] : [];
       if (selector === '[data-world-info-rule-name]') return controls.name ? [controls.name] : [];
+      if (selector === '[data-world-info-rule-mode]') return controls.mode ? [controls.mode] : [];
       return [];
     };
     body.querySelector = (selector) => body.querySelectorAll(selector)[0] ?? null;
@@ -1372,7 +1428,8 @@ function createStablePanelFixture(getState, options = {}) {
       ttapShell: 'v1',
       activeTab: state.panel.activeTab
     });
-    const backdrop = makeEventNode();
+    const backdrop = makeEventNode({ ttapClose: '' });
+    backdrop.className = 'ttap-backdrop';
     backdrop.hidden = !state.panel.open;
     const title = { textContent: PANEL_TABS.find((tab) => tab.id === state.panel.activeTab)?.label ?? PANEL_TABS[0].label };
     const tabs = PANEL_TABS.map((tab) => {
@@ -1394,21 +1451,39 @@ function createStablePanelFixture(getState, options = {}) {
       };
     }
     const tabsNode = {};
-    const mobileClose = makeEventNode();
-    const desktopClose = makeEventNode();
+    const mobileClose = makeEventNode({ ttapClose: '' });
+    mobileClose.className = 'ttap-icon-button ttap-mobile-close';
+    const desktopClose = makeEventNode({ ttapClose: '' });
+    desktopClose.className = 'ttap-icon-button ttap-desktop-close';
     const body = makeBody(html);
-    panel.querySelectorAll = (selector) => (
-      selector === '[data-ttap-close]' ? [mobileClose, desktopClose] : []
-    );
-    shell = {
+    const nextShell = {
       panel,
       backdrop,
       title,
       tabs,
       tabsNode,
+      mobileClose,
+      desktopClose,
       closeNodes: [backdrop, mobileClose, desktopClose],
       body
     };
+    panel.querySelector = (selector) => {
+      if (selector === '.ttap-mobile-close') {
+        return nextShell.mobileClose.className.split(' ').includes('ttap-mobile-close')
+          ? nextShell.mobileClose
+          : null;
+      }
+      if (selector === '.ttap-desktop-close') {
+        return nextShell.desktopClose.className.split(' ').includes('ttap-desktop-close')
+          ? nextShell.desktopClose
+          : null;
+      }
+      return null;
+    };
+    panel.querySelectorAll = (selector) => (
+      selector === '[data-ttap-close]' ? [nextShell.mobileClose, nextShell.desktopClose] : []
+    );
+    shell = nextShell;
   }
 
   const root = {
@@ -1500,6 +1575,10 @@ function createStablePanelFixture(getState, options = {}) {
     failNextRootWrite() {
       remainingRootWriteFailures += 1;
     },
+    failNextBodyCommitAfterMutation() {
+      remainingBodyInnerHtmlMutationFailures += 1;
+      remainingBodyReplaceMutationFailures += 1;
+    },
     clearTabs() {
       shell.tabs = [];
     },
@@ -1512,10 +1591,20 @@ function createStablePanelFixture(getState, options = {}) {
         ttapShell: 'v1',
         activeTab: shell.panel.dataset.activeTab
       });
+      panel.querySelector = (selector) => {
+        if (selector === '.ttap-mobile-close') {
+          return mobileClose.className.split(' ').includes('ttap-mobile-close') ? mobileClose : null;
+        }
+        if (selector === '.ttap-desktop-close') {
+          return desktopClose.className.split(' ').includes('ttap-desktop-close') ? desktopClose : null;
+        }
+        return null;
+      };
       panel.querySelectorAll = (selector) => (
         selector === '[data-ttap-close]' ? [mobileClose, desktopClose] : []
       );
-      const backdrop = makeEventNode();
+      const backdrop = makeEventNode({ ttapClose: '' });
+      backdrop.className = 'ttap-backdrop';
       backdrop.hidden = shell.backdrop.hidden;
       shell = {
         ...shell,
@@ -1523,11 +1612,32 @@ function createStablePanelFixture(getState, options = {}) {
         backdrop,
         title: { textContent: shell.title.textContent },
         body: makeBody(shell.body.innerHTML),
+        mobileClose,
+        desktopClose,
         closeNodes: [backdrop, mobileClose, desktopClose]
       };
     },
     replaceShellNode(name) {
       if (name === 'title') shell.title = { textContent: shell.title.textContent };
+    },
+    removeBackdropCloseMarker() {
+      delete shell.backdrop.dataset.ttapClose;
+      shell.closeNodes = [shell.mobileClose, shell.desktopClose];
+    },
+    removeCloseClass(name) {
+      shell[name].className = 'ttap-icon-button';
+    },
+    replaceCloseNode(name) {
+      const className = name === 'mobileClose'
+        ? 'ttap-icon-button ttap-mobile-close'
+        : 'ttap-icon-button ttap-desktop-close';
+      const replacement = makeEventNode({ ttapClose: '' });
+      replacement.className = className;
+      shell[name] = replacement;
+      shell.closeNodes = [shell.backdrop, shell.mobileClose, shell.desktopClose];
+    },
+    addExtraCloseMarker() {
+      shell.closeNodes = [...shell.closeNodes, makeEventNode({ ttapClose: '' })];
     }
   };
 }
@@ -1657,6 +1767,129 @@ test('mountPanel rolls back partial shell writes when a patch setter and full fa
   assert.deepEqual(snapshotStableShell(fixture), before);
 });
 
+test('mountPanel preserves interactive body nodes when replacement mutates then throws', () => {
+  let state = createInitialState({
+    panel: { open: true, activeTab: 'rules' },
+    ruleView: 'world-info',
+    worldInfoCatalog: {
+      worldRef: 'named:Lore',
+      worldName: 'Lore',
+      entries: [{ uid: '1', displayName: 'Hero', content: 'A' }]
+    },
+    worldInfoRuleEditor: {
+      view: 'edit',
+      editingId: 'rule-1',
+      search: '',
+      draft: { id: 'rule-1', name: 'Rule', mode: 'include', worldRef: 'named:Lore', entryUids: [] }
+    }
+  });
+  const fixture = createStablePanelFixture(() => state, { focusMutatesScroll: true });
+  let draftCalls = 0;
+  const mounted = mountPanel({
+    documentRef: fixture.documentRef,
+    getState: () => state,
+    onWorldInfoRuleDraft: () => {
+      draftCalls += 1;
+    }
+  });
+  const oldPanel = fixture.panel;
+  const oldBody = fixture.body;
+  const oldChildren = [...oldBody.childNodes];
+  const oldMode = fixture.controls.mode;
+  const oldSearch = fixture.controls.search;
+  const before = snapshotStableShell(fixture);
+
+  oldSearch.value = 'Hero';
+  oldSearch.setSelectionRange(1, 3, 'forward');
+  oldSearch.focus();
+  oldBody.scrollTop = 240;
+  fixture.namedScroll.scrollTop = 85;
+  fixture.failNextBodyCommitAfterMutation();
+  state = createInitialState({
+    panel: { open: false, activeTab: 'debug' },
+    settings: { ...state.settings, theme: 'light' }
+  });
+
+  assert.equal(mounted.render(), false);
+  assert.equal(fixture.rootWrites, 1);
+  assert.equal(fixture.panel, oldPanel);
+  assert.equal(fixture.body, oldBody);
+  assert.deepEqual(snapshotStableShell(fixture), before);
+  assert.equal(fixture.body.childNodes.length, oldChildren.length);
+  oldChildren.forEach((node, index) => assert.equal(fixture.body.childNodes[index], node));
+  assert.equal(fixture.controls.mode, oldMode);
+  assert.equal(fixture.controls.search, oldSearch);
+  assert.equal(fixture.documentRef.activeElement, oldSearch);
+  assert.deepEqual(
+    [oldSearch.selectionStart, oldSearch.selectionEnd, oldSearch.selectionDirection],
+    [1, 3, 'forward']
+  );
+  assert.equal(fixture.body.scrollTop, 240);
+  assert.equal(fixture.namedScroll.scrollTop, 85);
+  assert.equal(oldMode.listeners.get('click').length, 1);
+  oldMode.emit('click');
+  assert.equal(draftCalls, 1);
+});
+
+test('mountPanel rebinds lightweight body controls when innerHTML rollback rebuilds them', () => {
+  let state = createInitialState({
+    panel: { open: true, activeTab: 'rules' },
+    ruleView: 'world-info',
+    worldInfoCatalog: {
+      worldRef: 'named:Lore',
+      worldName: 'Lore',
+      entries: [{ uid: '1', displayName: 'Hero', content: 'A' }]
+    },
+    worldInfoRuleEditor: {
+      view: 'edit',
+      editingId: 'rule-1',
+      search: '',
+      draft: { id: 'rule-1', name: 'Rule', mode: 'include', worldRef: 'named:Lore', entryUids: [] }
+    }
+  });
+  const fixture = createStablePanelFixture(() => state, {
+    focusMutatesScroll: true,
+    lightweightBody: true
+  });
+  let draftCalls = 0;
+  const mounted = mountPanel({
+    documentRef: fixture.documentRef,
+    getState: () => state,
+    onWorldInfoRuleDraft: () => {
+      draftCalls += 1;
+    }
+  });
+  const oldPanel = fixture.panel;
+  const oldMode = fixture.controls.mode;
+  const oldSearch = fixture.controls.search;
+  const before = snapshotStableShell(fixture);
+
+  oldSearch.setSelectionRange(1, 3, 'forward');
+  oldSearch.focus();
+  fixture.body.scrollTop = 240;
+  fixture.namedScroll.scrollTop = 85;
+  fixture.failNextBodyCommitAfterMutation();
+  state = createInitialState({ panel: { open: false, activeTab: 'debug' } });
+
+  assert.equal(mounted.render(), false);
+  assert.equal(fixture.rootWrites, 1);
+  assert.equal(fixture.panel, oldPanel);
+  assert.deepEqual(snapshotStableShell(fixture), before);
+  assert.notEqual(fixture.controls.mode, oldMode);
+  assert.notEqual(fixture.controls.search, oldSearch);
+  assert.equal(fixture.documentRef.activeElement, fixture.controls.search);
+  assert.deepEqual(
+    [fixture.controls.search.selectionStart, fixture.controls.search.selectionEnd,
+      fixture.controls.search.selectionDirection],
+    [1, 3, 'forward']
+  );
+  assert.equal(fixture.body.scrollTop, 240);
+  assert.equal(fixture.namedScroll.scrollTop, 85);
+  assert.equal(fixture.controls.mode.listeners.get('click').length, 1);
+  fixture.controls.mode.emit('click');
+  assert.equal(draftCalls, 1);
+});
+
 test('mountPanel fully rerenders when the owned shell has zero canonical tabs', () => {
   const state = createInitialState({ panel: { open: true, activeTab: 'overview' } });
   const fixture = createStablePanelFixture(() => state);
@@ -1699,6 +1932,33 @@ test('mountPanel fully rerenders when one owned shell node is replaced', () => {
 
   assert.equal(fixture.rootWrites, 2);
   assert.notEqual(fixture.panel, firstPanel);
+});
+
+test('mountPanel fully rerenders when owned close markers, classes, or identities change', () => {
+  const cases = [
+    ['backdrop marker removed', (fixture) => fixture.removeBackdropCloseMarker()],
+    ['mobile close class removed', (fixture) => fixture.removeCloseClass('mobileClose')],
+    ['desktop close identity replaced', (fixture) => fixture.replaceCloseNode('desktopClose')],
+    ['fourth close marker added', (fixture) => fixture.addExtraCloseMarker()]
+  ];
+
+  for (const [label, mutate] of cases) {
+    const state = createInitialState({ panel: { open: true, activeTab: 'overview' } });
+    const fixture = createStablePanelFixture(() => state);
+    const mounted = mountPanel({ documentRef: fixture.documentRef, getState: () => state });
+    const firstPanel = fixture.panel;
+
+    mutate(fixture);
+    assert.equal(mounted.render(), true, label);
+    assert.equal(fixture.rootWrites, 2, label);
+    assert.notEqual(fixture.panel, firstPanel, label);
+    assert.equal(fixture.closeNodes.length, 3, label);
+    assert.deepEqual(
+      fixture.closeNodes.map((node) => node.listeners.get('click').length),
+      [1, 1, 1],
+      label
+    );
+  }
 });
 
 test('mountPanel fully renders once before patching a pre-existing complete shell', () => {

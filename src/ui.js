@@ -10,6 +10,9 @@ const CANONICAL_TABS = Object.freeze([
   Object.freeze({ id: 'settings', label: '设置', icon: 'fa-gear' })
 ]);
 const DEFAULT_TAB = CANONICAL_TABS.find((tab) => tab.id === 'overview') ?? CANONICAL_TABS[0];
+const PATCH_SUCCESS = Symbol('patch success');
+const PATCH_INVALID_SHELL = Symbol('patch invalid shell');
+const PATCH_FAILED_ROLLED_BACK = Symbol('patch failed and rolled back');
 
 export function renderPanelHtml(state, debugEntries = []) {
   const safeState = normalizeState(state);
@@ -142,7 +145,9 @@ export function mountPanel(options = {}) {
 
   function patchPanelShell(root, state, debugEntries) {
     const currentShell = captureOwnedPanelShell(root, debug);
-    if (!ownedShell || !currentShell || !sameOwnedPanelShell(ownedShell, currentShell)) return false;
+    if (!ownedShell || !currentShell || !sameOwnedPanelShell(ownedShell, currentShell)) {
+      return PATCH_INVALID_SHELL;
+    }
     const { panel, backdrop, title, body, tabs } = currentShell;
 
     const themeState = safeQuery(root, '.ttap-theme-state', debug);
@@ -158,54 +163,61 @@ export function mountPanel(options = {}) {
         title: activeTabLabel(state.panel.activeTab),
         themeLabel: themeLabel(theme),
         bodyHtml: renderActiveTab(state, debugEntries),
-        tabs: tabs.map((tab) => ({
+        tabs: tabs.map((tab, index) => ({
           node: tab,
-          selected: String(safeProperty(safeDataset(tab), 'tab') === state.panel.activeTab)
+          selected: String(CANONICAL_TABS[index].id === state.panel.activeTab)
         }))
       };
     } catch (error) {
       warnDebug(debug, 'Unable to calculate panel patch', error);
-      return false;
+      return PATCH_FAILED_ROLLED_BACK;
     }
 
     const previous = capturePanelPatchState({ panel, backdrop, title, themeState, body, tabs }, debug);
-    if (!previous) return false;
+    if (!previous) return PATCH_FAILED_ROLLED_BACK;
     const focusSnapshot = capturePanelFocus(documentRef, root);
     const scrollSnapshot = capturePanelScroll(body, debug);
+    const bodyPatch = preparePanelBodyPatch(body, next.bodyHtml, previous.body, debug);
+    if (!bodyPatch) return PATCH_FAILED_ROLLED_BACK;
     const panelDataset = safeDataset(panel);
     const previousActiveTab = renderedActiveTab ?? toText(safeProperty(panelDataset, 'activeTab'));
     const sameActiveTab = previousActiveTab === state.panel.activeTab;
 
     const rollbacks = [];
     const write = (writer, rollback) => applyPanelWrite(rollbacks, writer, rollback, debug);
+    const failedPatch = () => {
+      restorePanelFocus(root, focusSnapshot, debug);
+      restorePanelScroll(body, scrollSnapshot, true, debug);
+      return PATCH_FAILED_ROLLED_BACK;
+    };
     if (!write(
       () => safeSetData(panel, 'open', 'data-open', next.open, debug),
       () => restoreDatasetState(previous.open, debug)
-    )) return false;
+    )) return failedPatch();
     if (!write(
       () => safeSetData(panel, 'ttapTheme', 'data-ttap-theme', next.theme, debug),
       () => restoreDatasetState(previous.theme, debug)
-    )) return false;
+    )) return failedPatch();
     if (!write(
       () => safeSetData(panel, 'activeTab', 'data-active-tab', next.activeTab, debug),
       () => restoreDatasetState(previous.activeTab, debug)
-    )) return false;
+    )) return failedPatch();
     if (!write(
       () => safeSetProperty(backdrop, 'hidden', next.backdropHidden, debug),
       () => restorePropertyState(previous.backdrop, debug)
-    )) return false;
+    )) return failedPatch();
     if (!write(
       () => safeSetProperty(title, 'textContent', next.title, debug),
       () => restorePropertyState(previous.title, debug)
-    )) return false;
+    )) return failedPatch();
     if (themeState && !write(
       () => safeSetProperty(themeState, 'textContent', next.themeLabel, debug),
       () => restorePropertyState(previous.themeLabel, debug)
-    )) return false;
+    )) return failedPatch();
     if (!write(
-      () => safeSetProperty(body, 'innerHTML', next.bodyHtml, debug),
-      () => restorePropertyState(previous.body, debug)
-    )) return false;
+      bodyPatch.commit,
+      bodyPatch.rollback
+    )) return failedPatch();
 
     let activeTab = null;
     for (let index = 0; index < next.tabs.length; index += 1) {
@@ -214,7 +226,7 @@ export function mountPanel(options = {}) {
         () => safeSetAttribute(tab.node, 'aria-selected', tab.selected, debug),
         () => restoreAttributeState(previous.tabs[index], debug)
       )) {
-        return false;
+        return failedPatch();
       }
       if (tab.selected === 'true') activeTab = tab.node;
     }
@@ -223,7 +235,7 @@ export function mountPanel(options = {}) {
     safeScrollIntoView(activeTab, debug);
     restorePanelScroll(body, scrollSnapshot, sameActiveTab, debug);
     renderedActiveTab = state.panel.activeTab;
-    return true;
+    return PATCH_SUCCESS;
   }
 
   function render() {
@@ -236,16 +248,18 @@ export function mountPanel(options = {}) {
       warnDebug(debug, 'Unable to normalize panel debug entries', error);
       return false;
     }
-    let patched = false;
+    let patchResult = PATCH_INVALID_SHELL;
     if (hasRendered) {
       try {
-        patched = patchPanelShell(root, state, debugEntries);
+        patchResult = patchPanelShell(root, state, debugEntries);
       } catch (error) {
         warnDebug(debug, 'Unable to patch panel shell', error);
+        patchResult = PATCH_FAILED_ROLLED_BACK;
       }
     }
 
-    if (!patched) {
+    const patchFailed = hasRendered && patchResult === PATCH_FAILED_ROLLED_BACK;
+    if (!hasRendered || patchResult === PATCH_INVALID_SHELL) {
       try {
         root.innerHTML = renderPanelHtml(state, debugEntries);
         hasRendered = true;
@@ -324,7 +338,7 @@ export function mountPanel(options = {}) {
       safeInvoke(onWorldInfoRuleDraft, debug, { mode: safeDatasetValue(button, 'worldInfoRuleMode') });
     }, eventBindings, debug) && bound;
 
-    return bound;
+    return patchFailed ? false : bound;
   }
 
   render();
@@ -728,7 +742,9 @@ function captureOwnedPanelShell(root, debug) {
   const body = safeQuery(root, '[data-workspace-body]', debug);
   const tabsNode = safeQuery(root, '.ttap-tabs', debug);
   const tabs = safeQueryAll(root, '[data-tab]', debug);
+  const closeNodes = safeQueryAll(root, '[data-ttap-close]', debug);
   if (!panel || !backdrop || !title || !body || !tabsNode || tabs === null
+    || closeNodes === null
     || new Set([panel, backdrop, title, body, tabsNode]).size !== 5
     || safeDatasetValue(panel, 'ttapShell') !== 'v1'
     || tabs.length !== CANONICAL_TABS.length
@@ -736,9 +752,27 @@ function captureOwnedPanelShell(root, debug) {
     return null;
   }
 
-  const closeNodes = safeQueryAll(panel, '[data-ttap-close]', debug);
-  if (closeNodes === null || closeNodes.length !== 2 || new Set(closeNodes).size !== 2) return null;
-  return { panel, backdrop, title, body, tabsNode, tabs, closeNodes };
+  const panelCloseNodes = safeQueryAll(panel, '[data-ttap-close]', debug);
+  const mobileClose = safeQuery(panel, '.ttap-mobile-close', debug);
+  const desktopClose = safeQuery(panel, '.ttap-desktop-close', debug);
+  if (!mobileClose || !desktopClose || panelCloseNodes === null
+    || closeNodes.length !== 3 || new Set(closeNodes).size !== 3
+    || panelCloseNodes.length !== 2 || new Set(panelCloseNodes).size !== 2
+    || closeNodes[0] !== backdrop || closeNodes[1] !== mobileClose || closeNodes[2] !== desktopClose
+    || panelCloseNodes[0] !== mobileClose || panelCloseNodes[1] !== desktopClose) {
+    return null;
+  }
+  return {
+    panel,
+    backdrop,
+    title,
+    body,
+    tabsNode,
+    tabs,
+    closeNodes,
+    mobileClose,
+    desktopClose
+  };
 }
 
 function sameOwnedPanelShell(owned, current) {
@@ -747,6 +781,8 @@ function sameOwnedPanelShell(owned, current) {
     && owned.title === current.title
     && owned.body === current.body
     && owned.tabsNode === current.tabsNode
+    && owned.mobileClose === current.mobileClose
+    && owned.desktopClose === current.desktopClose
     && owned.tabs.every((tab, index) => tab === current.tabs[index])
     && owned.closeNodes.every((node, index) => node === current.closeNodes[index]);
 }
@@ -768,6 +804,99 @@ function capturePanelPatchState(nodes, debug) {
     return null;
   }
   return state;
+}
+
+function preparePanelBodyPatch(body, nextHtml, previousBody, debug) {
+  const failed = Symbol('body patch property read failed');
+  const childNodes = safeProperty(body, 'childNodes', failed);
+  const replaceChildren = safeProperty(body, 'replaceChildren', failed);
+  if (childNodes === failed || replaceChildren === failed) {
+    warnDebug(debug, 'Unable to inspect panel body nodes', new Error('body node APIs unavailable'));
+    return null;
+  }
+
+  if (childNodes === undefined || childNodes === null || typeof replaceChildren !== 'function') {
+    return {
+      commit: () => safeSetProperty(body, 'innerHTML', nextHtml, debug),
+      rollback: () => restorePropertyState(previousBody, debug)
+    };
+  }
+
+  let previousNodes;
+  try {
+    previousNodes = Array.from(childNodes);
+  } catch (error) {
+    warnDebug(debug, 'Unable to capture panel body nodes', error);
+    return null;
+  }
+
+  const nextNodes = stagePanelBodyNodes(body, nextHtml, debug);
+  if (!nextNodes) return null;
+  return {
+    commit: () => replacePanelBodyChildren(body, replaceChildren, nextNodes, debug),
+    rollback: () => restorePanelBodyChildren(body, replaceChildren, previousNodes, debug)
+  };
+}
+
+function stagePanelBodyNodes(body, nextHtml, debug) {
+  const failed = Symbol('body staging property read failed');
+  const ownerDocument = safeProperty(body, 'ownerDocument', failed);
+  if (ownerDocument === failed || !isRecord(ownerDocument)) {
+    warnDebug(debug, 'Unable to stage panel body', new Error('ownerDocument unavailable'));
+    return null;
+  }
+  const createElement = safeProperty(ownerDocument, 'createElement', failed);
+  if (createElement === failed || typeof createElement !== 'function') {
+    warnDebug(debug, 'Unable to stage panel body', new Error('createElement unavailable'));
+    return null;
+  }
+
+  try {
+    const template = createElement.call(ownerDocument, 'template');
+    if (!isRecord(template)) throw new Error('template unavailable');
+    const content = safeProperty(template, 'content', failed);
+    if (content === failed) throw new Error('template content unavailable');
+    if (isRecord(content)) {
+      template.innerHTML = nextHtml;
+      const nodes = safeProperty(content, 'childNodes', failed);
+      if (nodes === failed || nodes === undefined || nodes === null) {
+        throw new Error('template child nodes unavailable');
+      }
+      return Array.from(nodes);
+    }
+
+    const container = createElement.call(ownerDocument, 'div');
+    if (!isRecord(container)) throw new Error('staging container unavailable');
+    container.innerHTML = nextHtml;
+    const nodes = safeProperty(container, 'childNodes', failed);
+    if (nodes === failed || nodes === undefined || nodes === null) {
+      throw new Error('staged child nodes unavailable');
+    }
+    return Array.from(nodes);
+  } catch (error) {
+    warnDebug(debug, 'Unable to stage panel body', error);
+    return null;
+  }
+}
+
+function replacePanelBodyChildren(body, replaceChildren, nodes, debug) {
+  try {
+    replaceChildren.call(body, ...nodes);
+    return true;
+  } catch (error) {
+    warnDebug(debug, 'Unable to replace panel body nodes', error);
+    return false;
+  }
+}
+
+function restorePanelBodyChildren(body, replaceChildren, nodes, debug) {
+  try {
+    replaceChildren.call(body, ...nodes);
+    return true;
+  } catch (error) {
+    warnDebug(debug, 'Unable to restore panel body nodes', error);
+    return false;
+  }
 }
 
 function captureDatasetState(node, key) {

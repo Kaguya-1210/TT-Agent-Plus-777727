@@ -65,9 +65,9 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
   position: fixed;
   inset: 0;
   z-index: var(--ttap-layer-backdrop);
-  background: rgba(0, 0, 0, 0.36);
+  background: transparent;
   opacity: 1;
-  transition: opacity 180ms ease;
+  pointer-events: none;
 }
 
 .ttap-backdrop[hidden] {
@@ -76,35 +76,43 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
 
 .ttap-panel {
   position: fixed;
-  top: 50vh;
-  top: 50dvh;
-  left: 50vw;
-  right: auto;
+  inset: 0;
   z-index: var(--ttap-layer-panel);
-  width: min(560px, calc(100vw - 32px));
-  height: min(680px, calc(100vh - 96px));
-  height: min(680px, calc(100dvh - 96px));
-  max-height: calc(100vh - 96px);
-  max-height: calc(100dvh - 96px);
+  box-sizing: border-box;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
   min-width: 0;
+  min-height: 0;
   background: var(--ttap-panel);
   color: var(--ttap-text);
-  border: 1px solid var(--ttap-border);
-  border-radius: 8px;
-  box-shadow: 0 22px 64px var(--ttap-shadow);
-  transform: translate(-50%, calc(-50% + 12px)) scale(0.98);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  transform: translateY(6px);
   opacity: 0;
   pointer-events: none;
-  transition: transform 220ms ease, opacity 180ms ease;
+  transition: transform 180ms ease, opacity 180ms ease;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-columns: 208px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "brand workspace-header"
+    "tabs body"
+    "sidebar-footer body";
+  letter-spacing: 0;
   overflow-wrap: anywhere;
   overflow: hidden;
   backdrop-filter: blur(14px);
 }
 
+.ttap-panel,
+.ttap-panel * {
+  box-sizing: border-box;
+}
+
 .ttap-panel[data-open="true"] {
-  transform: translate(-50%, -50%) scale(1);
+  transform: translateY(0);
   opacity: 1;
   pointer-events: auto;
 }
@@ -136,9 +144,11 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
 }
 
 .ttap-header {
-  min-height: 58px;
+  grid-area: brand;
+  min-height: 72px;
   min-width: 0;
-  padding: 0 14px;
+  padding: 14px 16px;
+  border-right: 1px solid var(--ttap-border);
   border-bottom: 1px solid var(--ttap-border);
   display: flex;
   align-items: center;
@@ -178,6 +188,9 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
   font-size: 15px;
   line-height: 1.25;
   letter-spacing: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ttap-icon-button {
@@ -185,24 +198,53 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
   width: 34px;
   height: 34px;
   padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .ttap-tabs {
+  grid-area: tabs;
   display: flex;
-  gap: 6px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
   min-width: 0;
-  padding: 8px 10px;
-  overflow-x: auto;
-  border-bottom: 1px solid var(--ttap-border);
+  min-height: 0;
+  padding: 12px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-right: 1px solid var(--ttap-border);
 }
 
 .ttap-tab {
   flex: 0 0 auto;
-  min-height: 34px;
-  padding: 0 11px;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 12px;
   border-color: transparent;
   background: transparent;
   color: var(--ttap-muted);
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.ttap-tab-icon {
+  flex: 0 0 18px;
+  width: 18px;
+  text-align: center;
+}
+
+.ttap-tab span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ttap-tab[aria-selected="true"] {
@@ -211,11 +253,67 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
   background: var(--ttap-accent-soft);
 }
 
-.ttap-body {
+.ttap-sidebar-footer {
+  grid-area: sidebar-footer;
   min-width: 0;
+  min-height: 58px;
+  padding: 11px 16px;
+  border-top: 1px solid var(--ttap-border);
+  border-right: 1px solid var(--ttap-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ttap-theme-state {
+  min-width: 0;
+  color: var(--ttap-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ttap-workspace-header {
+  grid-area: workspace-header;
+  min-width: 0;
+  min-height: 72px;
+  padding: 13px 20px;
+  border-bottom: 1px solid var(--ttap-border);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+}
+
+.ttap-workspace-header h1 {
+  min-width: 0;
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.25;
+  letter-spacing: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ttap-mobile-close {
+  display: none;
+}
+
+.ttap-desktop-close {
+  display: inline-flex;
+}
+
+.ttap-body {
+  grid-area: body;
+  min-width: 0;
+  min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
   overflow-wrap: anywhere;
-  padding: 12px;
+  padding: 16px;
   background: var(--ttap-bg);
 }
 
@@ -746,16 +844,81 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
   min-height: 36px;
 }
 
-@media (max-width: 520px) {
+@media (max-width: 720px) {
   .ttap-panel {
-    width: calc(100vw - 16px);
-    height: calc(100vh - 16px);
-    height: calc(100dvh - 16px);
-    max-height: calc(100vh - 16px);
-    max-height: calc(100dvh - 16px);
-    border-radius: 8px;
+    box-sizing: border-box;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-areas:
+      "brand"
+      "tabs"
+      "body";
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-left: env(safe-area-inset-left, 0px);
   }
 
+  .ttap-header {
+    min-height: 58px;
+    padding: 10px 12px;
+    border-right: 0;
+  }
+
+  .ttap-workspace-header,
+  .ttap-sidebar-footer {
+    display: none;
+  }
+
+  .ttap-mobile-close {
+    display: inline-flex;
+  }
+
+  .ttap-desktop-close {
+    display: none;
+  }
+
+  .ttap-tabs {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x mandatory;
+    border-right: 0;
+    border-bottom: 1px solid var(--ttap-border);
+  }
+
+  .ttap-tab {
+    flex: 0 0 auto;
+    width: auto;
+    min-height: 36px;
+    padding: 0 11px;
+    scroll-snap-align: start;
+  }
+
+  .ttap-tab span {
+    overflow: visible;
+    text-overflow: clip;
+  }
+
+  .ttap-body {
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    padding: 12px;
+  }
+
+  .ttap-world-info-workspace[data-editing="true"] {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 520px) {
   .ttap-metrics,
   .ttap-settings-grid,
   .ttap-status-grid {
@@ -815,8 +978,9 @@ body[data-theme="dark"] .ttap-panel[data-ttap-theme="system"] {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ttap-backdrop,
-  .ttap-panel {
+  .ttap-panel,
+  .ttap-tab,
+  .ttap-body {
     transition: none;
   }
 }

@@ -527,20 +527,87 @@ test('world-info rule styles provide stable scrolling rows and a narrow single-c
 
 
 
-test('panel opens as a centered modal instead of a right edge drawer', () => {
+test('panel fills the viewport without legacy centered-modal geometry', () => {
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
   const panelBlock = css.match(/\.ttap-panel\s*{(?<body>[\s\S]*?)\n}/)?.groups?.body ?? '';
   const openBlock = css.match(/\.ttap-panel\[data-open="true"\]\s*{(?<body>[\s\S]*?)\n}/)?.groups?.body ?? '';
 
-  assert.match(panelBlock, /top:\s*50dvh/);
-  assert.match(panelBlock, /left:\s*50vw/);
-  assert.match(panelBlock, /right:\s*auto/);
-  assert.match(panelBlock, /width:\s*min\(560px, calc\(100vw - 32px\)\)/);
-  assert.match(panelBlock, /(?:^|\n)\s*height:\s*min\(680px, calc\(100dvh - 96px\)\)/);
-  assert.match(panelBlock, /(?:^|\n)\s*max-height:\s*calc\(100dvh - 96px\)/);
-  assert.match(panelBlock, /transform:\s*translate\(-50%, calc\(-50% \+ 12px\)\) scale\(0\.98\)/);
-  assert.match(openBlock, /transform:\s*translate\(-50%, -50%\) scale\(1\)/);
-  assert.doesNotMatch(panelBlock, /(?:^|\n)\s*height:\s*100dvh/);
+  assert.match(panelBlock, /inset:\s*0/);
+  assert.match(panelBlock, /width:\s*100vw/);
+  assert.match(panelBlock, /height:\s*100vh;[\s\S]*height:\s*100dvh/);
+  assert.match(panelBlock, /min-width:\s*0/);
+  assert.match(panelBlock, /min-height:\s*0/);
+  assert.match(panelBlock, /border:\s*0/);
+  assert.match(panelBlock, /border-radius:\s*0/);
+  assert.match(panelBlock, /box-shadow:\s*none/);
+  assert.match(panelBlock, /overflow:\s*hidden/);
+  assert.match(openBlock, /transform:\s*translateY\(0\)/);
+  assert.doesNotMatch(panelBlock, /top:\s*50|left:\s*50|translate\(-50%|scale\(|width:\s*min\(|height:\s*min\(|max-(?:width|height):\s*calc\(/);
+  assert.doesNotMatch(openBlock, /translate\(-50%|scale\(/);
+});
+
+test('desktop shell uses a 208px sidebar with vertical navigation and an independently scrolling body', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  const panelBlock = css.match(/\.ttap-panel\s*{(?<body>[\s\S]*?)\n}/)?.groups?.body ?? '';
+  const tabsBlock = css.match(/\.ttap-tabs\s*{(?<body>[\s\S]*?)\n}/)?.groups?.body ?? '';
+  const bodyBlock = css.match(/\.ttap-body\s*{(?<body>[\s\S]*?)\n}/)?.groups?.body ?? '';
+
+  assert.match(panelBlock, /grid-template-columns:\s*208px minmax\(0,\s*1fr\)/);
+  assert.match(panelBlock, /grid-template-rows:\s*auto minmax\(0,\s*1fr\) auto/);
+  assert.match(panelBlock, /grid-template-areas:\s*"brand workspace-header"\s*"tabs body"\s*"sidebar-footer body"/);
+  assert.match(css, /\.ttap-header\s*{[\s\S]*grid-area:\s*brand/);
+  assert.match(css, /\.ttap-tabs\s*{[\s\S]*grid-area:\s*tabs/);
+  assert.match(css, /\.ttap-sidebar-footer\s*{[\s\S]*grid-area:\s*sidebar-footer/);
+  assert.match(css, /\.ttap-workspace-header\s*{[\s\S]*grid-area:\s*workspace-header/);
+  assert.match(css, /\.ttap-body\s*{[\s\S]*grid-area:\s*body/);
+  assert.match(tabsBlock, /flex-direction:\s*column/);
+  assert.match(tabsBlock, /overflow-x:\s*hidden/);
+  assert.match(css, /\.ttap-tab\s*{[\s\S]*display:\s*flex[\s\S]*white-space:\s*nowrap/);
+  assert.match(css, /\.ttap-mobile-close\s*{[\s\S]*display:\s*none/);
+  assert.match(css, /\.ttap-desktop-close\s*{[\s\S]*display:\s*(?!none)/);
+  assert.match(bodyBlock, /min-width:\s*0/);
+  assert.match(bodyBlock, /min-height:\s*0/);
+  assert.match(bodyBlock, /overflow:\s*auto/);
+  assert.match(bodyBlock, /overscroll-behavior:\s*contain/);
+});
+
+test('mobile shell at 720px uses safe areas, horizontal snap tabs, and one scrolling column', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  const mobileStart = css.indexOf('@media (max-width: 720px)');
+  const mobileEnd = css.indexOf('@media (max-width: 520px)', mobileStart);
+  const mobileCss = mobileStart >= 0 ? css.slice(mobileStart, mobileEnd >= 0 ? mobileEnd : undefined) : '';
+
+  assert.notEqual(mobileStart, -1);
+  assert.match(mobileCss, /\.ttap-panel\s*{[\s\S]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+  assert.match(mobileCss, /\.ttap-panel\s*{[\s\S]*grid-template-rows:\s*auto auto minmax\(0,\s*1fr\)/);
+  assert.match(mobileCss, /grid-template-areas:\s*"brand"\s*"tabs"\s*"body"/);
+  assert.match(mobileCss, /padding-top:\s*env\(safe-area-inset-top,\s*0px\)/);
+  assert.match(mobileCss, /padding-right:\s*env\(safe-area-inset-right,\s*0px\)/);
+  assert.match(mobileCss, /padding-bottom:\s*env\(safe-area-inset-bottom,\s*0px\)/);
+  assert.match(mobileCss, /padding-left:\s*env\(safe-area-inset-left,\s*0px\)/);
+  assert.match(mobileCss, /\.ttap-workspace-header[\s\S]*\.ttap-sidebar-footer\s*{[\s\S]*display:\s*none/);
+  assert.match(mobileCss, /\.ttap-mobile-close\s*{[\s\S]*display:\s*(?:inline-)?flex/);
+  assert.match(mobileCss, /\.ttap-tabs\s*{[\s\S]*flex-direction:\s*row[\s\S]*flex-wrap:\s*nowrap/);
+  assert.match(mobileCss, /\.ttap-tabs\s*{[\s\S]*overflow-x:\s*auto[\s\S]*overflow-y:\s*hidden/);
+  assert.match(mobileCss, /-webkit-overflow-scrolling:\s*touch/);
+  assert.match(mobileCss, /scroll-snap-type:\s*x mandatory/);
+  assert.match(mobileCss, /\.ttap-tab\s*{[\s\S]*flex:\s*0 0 auto[\s\S]*scroll-snap-align:\s*start/);
+  assert.match(mobileCss, /\.ttap-body\s*{[\s\S]*min-width:\s*0[\s\S]*min-height:\s*0[\s\S]*overflow:\s*auto/);
+  assert.match(mobileCss, /\.ttap-world-info-workspace\[data-editing="true"\]\s*{[\s\S]*grid-template-columns:\s*1fr/);
+});
+
+test('responsive shell keeps the backdrop inert and uses accessible motion', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  const backdropBlock = css.match(/\.ttap-backdrop\s*{(?<body>[\s\S]*?)\n}/)?.groups?.body ?? '';
+  const panelBlock = css.match(/\.ttap-panel\s*{(?<body>[\s\S]*?)\n}/)?.groups?.body ?? '';
+  const reducedMotionCss = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+
+  assert.match(backdropBlock, /background:\s*transparent/);
+  assert.match(backdropBlock, /pointer-events:\s*none/);
+  assert.match(panelBlock, /transform:\s*translateY\(6px\)/);
+  assert.match(panelBlock, /transition:\s*transform 180ms ease,\s*opacity 180ms ease/);
+  assert.doesNotMatch(panelBlock, /scale\(/);
+  assert.match(reducedMotionCss, /\.ttap-panel[\s\S]*\.ttap-tab[\s\S]*\.ttap-body\s*{[\s\S]*transition:\s*none/);
 });
 
 test('panel overlay is layered above host navigation chrome', () => {

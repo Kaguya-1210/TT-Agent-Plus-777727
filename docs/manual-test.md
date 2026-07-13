@@ -116,7 +116,7 @@ panel = document.querySelector('.ttap-panel');
 
 `步骤 3`：关闭或退出 DevTools，确认键盘焦点返回 TT 页面，且本轮触发控件仍保持焦点。
 
-`步骤 4`：确认键盘焦点位于 TT 页面后，按一次 `Tab` 或遍历页面可聚焦控件。不得在 DevTools 控制台持有键盘焦点时按 `Tab`，否则检查的是 DevTools 而不是 TT 页面。
+`步骤 4`：确认键盘焦点位于 TT 页面后，持续按 `Tab` 遍历完整焦点环，直到焦点回到本轮触发控件；记录或观察遍历过程中焦点始终不进入已关闭的 `panel`。不得在 DevTools 控制台持有键盘焦点时按 `Tab`，否则检查的是 DevTools 而不是 TT 页面。
 
 `步骤 5`：重新打开 DevTools，在控制台执行以下检查；结果应为 `true`，确认 Tab 导航没有进入已关闭的 `panel`。
 

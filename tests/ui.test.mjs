@@ -1254,6 +1254,9 @@ function createStablePanelFixture(getState, options = {}) {
       setAttribute(name, value) {
         this.attributes.set(name, String(value));
       },
+      getAttribute(name) {
+        return this.attributes.get(name) ?? null;
+      },
       scrollIntoView(value) {
         this.scrollIntoViewCalls.push(value);
       }
@@ -1307,14 +1310,19 @@ function createStablePanelFixture(getState, options = {}) {
   function makeBody(initialHtml) {
     const body = makeScrollNode();
     let bodyHtml = '';
-    let namedScroll = null;
+    let namedScrolls = [];
     let controls = {};
 
     function replaceBody(value) {
       bodyWrites += 1;
       bodyHtml = String(value);
       const previousControls = controls;
-      namedScroll = makeScrollNode({ scrollKey: 'named-region' });
+      const scrollKeys = [...bodyHtml.matchAll(/data-scroll-key="([^"]+)"/g)]
+        .map((match) => match[1]);
+      const effectiveKeys = options.duplicateScrollKey
+        ? [options.duplicateScrollKey, options.duplicateScrollKey]
+        : (scrollKeys.length ? scrollKeys : ['named-region']);
+      namedScrolls = effectiveKeys.map((scrollKey) => makeScrollNode({ scrollKey }));
       controls = {};
       if (bodyHtml.includes('data-export-debug')) {
         controls.export = options.preserveBodyControls && previousControls.export
@@ -1339,14 +1347,15 @@ function createStablePanelFixture(getState, options = {}) {
       }
     });
     body.querySelectorAll = (selector) => {
-      if (selector === '[data-scroll-key]') return namedScroll ? [namedScroll] : [];
+      if (selector === '[data-scroll-key]') return namedScrolls;
       if (selector === '[data-export-debug]') return controls.export ? [controls.export] : [];
       if (selector === '[data-world-info-search]') return controls.search ? [controls.search] : [];
       if (selector === '[data-world-info-rule-name]') return controls.name ? [controls.name] : [];
       return [];
     };
     body.querySelector = (selector) => body.querySelectorAll(selector)[0] ?? null;
-    body.currentNamedScroll = () => namedScroll;
+    body.currentNamedScroll = () => namedScrolls[0] ?? null;
+    body.currentNamedScrolls = () => namedScrolls;
     body.currentControls = () => controls;
     replaceBody(initialHtml);
     return body;
@@ -1360,6 +1369,7 @@ function createStablePanelFixture(getState, options = {}) {
     const panel = makeEventNode({
       open: state.panel.open ? 'true' : 'false',
       ttapTheme: theme,
+      ttapShell: 'v1',
       activeTab: state.panel.activeTab
     });
     const backdrop = makeEventNode();
@@ -1370,10 +1380,26 @@ function createStablePanelFixture(getState, options = {}) {
       node.attributes.set('aria-selected', String(tab.id === state.panel.activeTab));
       return node;
     });
+    if (options.badTabBinding === 'missing') {
+      delete tabs[0].addEventListener;
+    } else if (options.badTabBinding === 'getter') {
+      Object.defineProperty(tabs[0], 'addEventListener', {
+        get() {
+          throw new Error('addEventListener getter failed');
+        }
+      });
+    } else if (options.badTabBinding === 'call') {
+      tabs[0].addEventListener = () => {
+        throw new Error('addEventListener call failed');
+      };
+    }
     const tabsNode = {};
     const mobileClose = makeEventNode();
     const desktopClose = makeEventNode();
     const body = makeBody(html);
+    panel.querySelectorAll = (selector) => (
+      selector === '[data-ttap-close]' ? [mobileClose, desktopClose] : []
+    );
     shell = {
       panel,
       backdrop,
@@ -1462,14 +1488,218 @@ function createStablePanelFixture(getState, options = {}) {
     get namedScroll() {
       return shell?.body.currentNamedScroll();
     },
+    get namedScrolls() {
+      return shell?.body.currentNamedScrolls();
+    },
     get controls() {
       return shell?.body.currentControls();
     },
     removeRequiredNode(name) {
       shell[name] = null;
+    },
+    failNextRootWrite() {
+      remainingRootWriteFailures += 1;
+    },
+    clearTabs() {
+      shell.tabs = [];
+    },
+    forgeCoreShellNodes() {
+      const mobileClose = shell.closeNodes[1];
+      const desktopClose = shell.closeNodes[2];
+      const panel = makeEventNode({
+        open: shell.panel.dataset.open,
+        ttapTheme: shell.panel.dataset.ttapTheme,
+        ttapShell: 'v1',
+        activeTab: shell.panel.dataset.activeTab
+      });
+      panel.querySelectorAll = (selector) => (
+        selector === '[data-ttap-close]' ? [mobileClose, desktopClose] : []
+      );
+      const backdrop = makeEventNode();
+      backdrop.hidden = shell.backdrop.hidden;
+      shell = {
+        ...shell,
+        panel,
+        backdrop,
+        title: { textContent: shell.title.textContent },
+        body: makeBody(shell.body.innerHTML),
+        closeNodes: [backdrop, mobileClose, desktopClose]
+      };
+    },
+    replaceShellNode(name) {
+      if (name === 'title') shell.title = { textContent: shell.title.textContent };
     }
   };
 }
+
+function snapshotStableShell(fixture) {
+  return {
+    panel: { ...fixture.panel.dataset },
+    backdropHidden: fixture.backdrop.hidden,
+    title: fixture.title.textContent,
+    bodyHtml: fixture.body.innerHTML,
+    tabs: fixture.tabs.map((tab) => tab.getAttribute('aria-selected'))
+  };
+}
+
+test('renderPanelHtml marks body-level scrolling regions with stable keys', () => {
+  const state = createInitialState({
+    panel: { open: true, activeTab: 'rules' },
+    ruleView: 'world-info',
+    worldInfoCatalog: {
+      worldRef: 'named:Lore',
+      worldName: 'Lore',
+      entries: [{ uid: '1', displayName: 'Hero', content: 'A'.repeat(800) }]
+    },
+    worldInfoRuleEditor: {
+      view: 'edit',
+      editingId: 'rule-1',
+      search: '',
+      draft: { id: 'rule-1', name: 'Rule', mode: 'include', worldRef: 'named:Lore', entryUids: [] }
+    }
+  });
+  const rulesHtml = renderPanelHtml(state);
+  const debugHtml = renderPanelHtml(createInitialState({ panel: { open: true, activeTab: 'debug' } }));
+
+  assert.match(rulesHtml, /class="ttap-rule-list" data-scroll-key="world-info-rules"/);
+  assert.match(rulesHtml, /class="ttap-entry-list" data-scroll-key="world-info-entries"/);
+  assert.match(rulesHtml, /data-scroll-key="world-info-preview-1"/);
+  assert.match(debugHtml, /class="ttap-debug-list" data-scroll-key="debug-events"/);
+});
+
+test('renderPanelHtml marks the owned panel shell version', () => {
+  const html = renderPanelHtml(createInitialState({ panel: { open: true, activeTab: 'overview' } }));
+
+  assert.match(html, /class="ttap-panel"[^>]*data-ttap-shell="v1"/);
+});
+
+test('mountPanel preserves duplicate production scroll keys by DOM order across search renders', () => {
+  let state = createInitialState({
+    panel: { open: true, activeTab: 'rules' },
+    ruleView: 'world-info',
+    worldInfoCatalog: {
+      worldRef: 'named:Lore',
+      worldName: 'Lore',
+      entries: [{ uid: '1', displayName: 'Hero', content: 'A' }]
+    },
+    worldInfoRuleEditor: {
+      view: 'edit',
+      editingId: 'rule-1',
+      search: '',
+      draft: { id: 'rule-1', name: 'Rule', mode: 'include', worldRef: 'named:Lore', entryUids: [] }
+    }
+  });
+  const fixture = createStablePanelFixture(() => state, {
+    duplicateScrollKey: 'world-info-entries'
+  });
+  const mounted = mountPanel({ documentRef: fixture.documentRef, getState: () => state });
+
+  fixture.namedScrolls[0].scrollTop = 35;
+  fixture.namedScrolls[1].scrollTop = 85;
+  state = {
+    ...state,
+    worldInfoRuleEditor: { ...state.worldInfoRuleEditor, search: 'Hero' }
+  };
+  assert.equal(mounted.render(), true);
+
+  assert.deepEqual(fixture.namedScrolls.map((node) => node.dataset.scrollKey), [
+    'world-info-entries',
+    'world-info-entries'
+  ]);
+  assert.deepEqual(fixture.namedScrolls.map((node) => node.scrollTop), [35, 85]);
+});
+
+test('mountPanel leaves the owned shell untouched when active tab rendering throws', () => {
+  let state = createInitialState({ panel: { open: true, activeTab: 'overview' } });
+  const fixture = createStablePanelFixture(() => state);
+  const mounted = mountPanel({ documentRef: fixture.documentRef, getState: () => state });
+  const before = snapshotStableShell(fixture);
+  const badTask = { id: 'task-bad' };
+  Object.defineProperty(badTask, 'state', {
+    get() {
+      throw new Error('task state failed');
+    }
+  });
+  state = createInitialState({ panel: { open: false, activeTab: 'tasks' } });
+  state.tasks = [badTask];
+
+  assert.equal(mounted.render(), false);
+  assert.deepEqual(snapshotStableShell(fixture), before);
+});
+
+test('mountPanel rolls back partial shell writes when a patch setter and full fallback fail', () => {
+  let state = createInitialState({ panel: { open: true, activeTab: 'overview' } });
+  const fixture = createStablePanelFixture(() => state);
+  const mounted = mountPanel({ documentRef: fixture.documentRef, getState: () => state });
+  const before = snapshotStableShell(fixture);
+  let title = fixture.title.textContent;
+  let failTitleWrite = true;
+  Object.defineProperty(fixture.title, 'textContent', {
+    configurable: true,
+    get() {
+      return title;
+    },
+    set(value) {
+      if (failTitleWrite) {
+        failTitleWrite = false;
+        throw new Error('title write failed');
+      }
+      title = value;
+    }
+  });
+  fixture.failNextRootWrite();
+  state = createInitialState({
+    panel: { open: false, activeTab: 'debug' },
+    settings: { ...state.settings, theme: 'light' }
+  });
+
+  assert.equal(mounted.render(), false);
+  assert.deepEqual(snapshotStableShell(fixture), before);
+});
+
+test('mountPanel fully rerenders when the owned shell has zero canonical tabs', () => {
+  const state = createInitialState({ panel: { open: true, activeTab: 'overview' } });
+  const fixture = createStablePanelFixture(() => state);
+  const mounted = mountPanel({ documentRef: fixture.documentRef, getState: () => state });
+  const firstPanel = fixture.panel;
+
+  fixture.clearTabs();
+  assert.equal(mounted.render(), true);
+
+  assert.equal(fixture.rootWrites, 2);
+  assert.notEqual(fixture.panel, firstPanel);
+  assert.equal(fixture.tabs.length, 6);
+});
+
+test('mountPanel fully rerenders a forged four-node shell', () => {
+  const state = createInitialState({ panel: { open: true, activeTab: 'overview' } });
+  const fixture = createStablePanelFixture(() => state);
+  const mounted = mountPanel({ documentRef: fixture.documentRef, getState: () => state });
+  const firstPanel = fixture.panel;
+
+  fixture.forgeCoreShellNodes();
+  const forgedPanel = fixture.panel;
+  assert.notEqual(forgedPanel, firstPanel);
+  assert.equal(mounted.render(), true);
+
+  assert.equal(fixture.rootWrites, 2);
+  assert.notEqual(fixture.panel, forgedPanel);
+});
+
+test('mountPanel fully rerenders when one owned shell node is replaced', () => {
+  const state = createInitialState({ panel: { open: true, activeTab: 'overview' } });
+  const fixture = createStablePanelFixture(() => state);
+  const mounted = mountPanel({ documentRef: fixture.documentRef, getState: () => state });
+  const firstPanel = fixture.panel;
+  const firstTitle = fixture.title;
+
+  fixture.replaceShellNode('title');
+  assert.notEqual(fixture.title, firstTitle);
+  assert.equal(mounted.render(), true);
+
+  assert.equal(fixture.rootWrites, 2);
+  assert.notEqual(fixture.panel, firstPanel);
+});
 
 test('mountPanel fully renders once before patching a pre-existing complete shell', () => {
   const state = createInitialState({ panel: { open: true, activeTab: 'overview' } });
@@ -1535,7 +1765,12 @@ test('mountPanel patches a complete shell without replacing panel or tabs', () =
   assert.equal(fixture.panel, firstPanel);
   assert.equal(fixture.tabsNode, firstTabsNode);
   assert.equal(fixture.tabs, firstTabs);
-  assert.deepEqual(fixture.panel.dataset, { open: 'false', ttapTheme: 'light', activeTab: 'debug' });
+  assert.deepEqual(fixture.panel.dataset, {
+    open: 'false',
+    ttapTheme: 'light',
+    ttapShell: 'v1',
+    activeTab: 'debug'
+  });
   assert.equal(fixture.backdrop.hidden, true);
   assert.equal(fixture.title.textContent, PANEL_TABS.find((tab) => tab.id === 'debug').label);
   assert.match(fixture.body.innerHTML, /data-export-debug/);
@@ -1687,6 +1922,26 @@ test('mountPanel deduplicates stable click listeners and binds replacement body 
   assert.equal(exportButton.listeners.get('click').length, 1);
   exportButton.emit('click');
   assert.equal(exportCalls, 1);
+});
+
+test('mountPanel reports matched binding failures without blocking normal sibling nodes', () => {
+  for (const failure of ['missing', 'getter', 'call']) {
+    const state = createInitialState({ panel: { open: true, activeTab: 'overview' } });
+    const fixture = createStablePanelFixture(() => state, { badTabBinding: failure });
+    let tabCalls = 0;
+    const mounted = mountPanel({
+      documentRef: fixture.documentRef,
+      getState: () => state,
+      onTab: () => {
+        tabCalls += 1;
+      }
+    });
+
+    assert.equal(mounted.render(), false, failure);
+    assert.equal(fixture.tabs[1].listeners.get('click').length, 1, failure);
+    fixture.tabs[1].emit('click');
+    assert.equal(tabCalls, 1, failure);
+  }
 });
 
 test('mountPanel render soft-fails hostile query, dataset, attribute, and scroll accessors', () => {

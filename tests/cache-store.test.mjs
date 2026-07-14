@@ -105,6 +105,20 @@ test('cache key includes world-info rule identity and versions in stable order',
   ].join('::'));
 });
 
+test('cache key rejects missing and global chat scopes', () => {
+  const descriptor = {
+    sourceHash: 'abc',
+    ruleTemplateId: 'airp-character-default',
+    ruleVersion: 1,
+    modelProfileId: 'current',
+    promptVersion: 1
+  };
+
+  assert.throws(() => createCacheKey(descriptor), /聊天作用域/);
+  assert.throws(() => createCacheKey({ ...descriptor, scopeId: '   ' }), /聊天作用域/);
+  assert.throws(() => createCacheKey({ ...descriptor, scopeId: 'global' }), /聊天作用域/);
+});
+
 test('cache key changes for world-info rule ID or version and keeps legacy defaults stable', () => {
   const descriptor = {
     scopeId: 'chat-1',

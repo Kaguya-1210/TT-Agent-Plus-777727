@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   normalizeWorldInfoScan,
   removeCoveredWorldInfoEntries,
+  resolveWorldInfoScopeId,
   subscribeWorldInfoScans,
   worldInfoSourceIdentity
 } from '../src/worldInfoCapture.js';
@@ -68,6 +69,7 @@ test('normalizeWorldInfoScan accepts array entries and removes duplicate world u
   });
 
   assert.equal(capture.entries.length, 1);
+  assert.equal(capture.scopeId, '');
   assert.equal(capture.entries[0].world, 'Lore');
   assert.equal(capture.entries[0].uid, 'a');
 });
@@ -153,6 +155,51 @@ test('subscribeWorldInfoScans listens through ST context and can unsubscribe', a
   assert.equal(stop(), true);
   assert.equal(removed.length, 1);
   assert.equal(listeners.has('worldinfo_scan_done'), false);
+});
+
+test('chat scope never falls back to a group or character identity', () => {
+  assert.equal(resolveWorldInfoScopeId({
+    getCurrentChatId: () => 'chat-primary',
+    chatId: 'chat-fallback',
+    groupId: 'group-1',
+    characterId: 'character-1'
+  }), 'chat-primary');
+  assert.equal(resolveWorldInfoScopeId({
+    chatId: 'chat-fallback',
+    groupId: 'group-1',
+    characterId: 'character-1'
+  }), 'chat-fallback');
+  assert.equal(resolveWorldInfoScopeId({ groupId: 'group-1', characterId: 'character-1' }), '');
+  assert.equal(resolveWorldInfoScopeId({ characterId: 'character-1' }), '');
+  assert.equal(resolveWorldInfoScopeId({ getCurrentChatId: () => '   ', chatId: 'chat-fallback' }), 'chat-fallback');
+  assert.equal(resolveWorldInfoScopeId({ getCurrentChatId: () => '   ', characterId: 'character-1' }), '');
+  assert.equal(resolveWorldInfoScopeId({}), '');
+});
+
+test('subscribeWorldInfoScans rejects captures without a stable chat identity', async () => {
+  let listener;
+  const captures = [];
+  const warnings = [];
+  const context = {
+    characterId: 'shared-character',
+    eventSource: {
+      on(name, callback) {
+        listener = callback;
+      }
+    },
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' }
+  };
+  const debug = {
+    warn(channel, message, details) {
+      warnings.push({ channel, message, details });
+    }
+  };
+
+  subscribeWorldInfoScans({ getContext: () => context, onCapture: (capture) => captures.push(capture), debug });
+  await listener(createScanEvent());
+
+  assert.equal(captures.length, 0);
+  assert.equal(warnings.some((entry) => entry.message.includes('聊天标识')), true);
 });
 
 test('subscribeWorldInfoScans soft-fails when event APIs are unavailable', () => {

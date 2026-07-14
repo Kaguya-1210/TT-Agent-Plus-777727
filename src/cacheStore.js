@@ -25,8 +25,12 @@ export function createCacheKey({
   modelProfileId,
   promptVersion
 }) {
+  const normalizedScopeId = typeof scopeId === 'string' ? scopeId.trim() : '';
+  if (!normalizedScopeId || normalizedScopeId === 'global') {
+    throw new Error('缓存必须提供稳定聊天作用域');
+  }
   return [
-    scopeId || 'global',
+    normalizedScopeId,
     sourceHash,
     ruleTemplateId,
     `rv${ruleVersion}`,

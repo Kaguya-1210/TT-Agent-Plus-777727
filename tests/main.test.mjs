@@ -67,6 +67,7 @@ test('refreshPromptInjection writes prompt through bridge when cache has an entr
   const app = await startTtAgentPlus727(createWindowRef(), {
     autoMount: false,
     getContext: () => ({
+      chatId: 'chat-prompt-refresh',
       extensionSettings: {},
       setExtensionPrompt: (...args) => prompts.push(args)
     }),
@@ -74,6 +75,7 @@ test('refreshPromptInjection writes prompt through bridge when cache has an entr
   });
 
   await app.cache.put(createCacheEntry('entry-1', {
+    scopeId: 'chat-prompt-refresh',
     processedText: 'Processed world fact',
     sourceRefs: [{ displayName: 'World A' }],
     tokenEstimate: 3
@@ -90,11 +92,62 @@ test('refreshPromptInjection writes prompt through bridge when cache has an entr
   assert.equal(app.state.lastInjection.length, block.length);
 });
 
+test('prompt injection fails closed without a stable chat identity', async () => {
+  const prompts = [];
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => ({
+      characterId: 'shared-character',
+      extensionSettings: {},
+      setExtensionPrompt: (...args) => prompts.push(args)
+    }),
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await app.cache.put(createCacheEntry('legacy-global-entry', {
+    scopeId: 'global',
+    processedText: '不得注入的全局资料'
+  }));
+
+  const block = await app.refreshPromptInjection();
+
+  assert.equal(block, '');
+  assert.equal(prompts.at(-1)[1], '');
+  assert.equal(app.state.lastInjection.count, 0);
+  assert.ok(app.debug.entries().some((entry) => (
+    entry.channel === 'prompt'
+    && entry.message.includes('聊天标识')
+  )));
+});
+
+test('prompt injection rejects an explicitly requested foreign chat scope', async () => {
+  const prompts = [];
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => ({
+      getCurrentChatId: () => 'chat-current',
+      extensionSettings: {},
+      setExtensionPrompt: (...args) => prompts.push(args)
+    }),
+    extensionPromptTypes: { IN_PROMPT: 7 }
+  });
+  await app.cache.put(createCacheEntry('foreign-entry', {
+    scopeId: 'chat-foreign',
+    processedText: '不得跨聊天读取的资料'
+  }));
+
+  const block = await app.refreshPromptInjection({ scopeId: 'chat-foreign' });
+
+  assert.equal(block, '');
+  assert.equal(prompts.at(-1)[1], '');
+  assert.equal(app.state.lastInjection.count, 0);
+});
+
 test('completed worker task writes cache and refreshes prompt injection', async () => {
   const prompts = [];
   const app = await startTtAgentPlus727(createWindowRef(), {
     autoMount: false,
     getContext: () => ({
+      chatId: 'chat-completed-worker',
       extensionSettings: {},
       setExtensionPrompt: (...args) => prompts.push(args)
     }),
@@ -103,6 +156,7 @@ test('completed worker task writes cache and refreshes prompt injection', async 
 
   app.dispatcher.enqueue({
     id: 'worker-cache-1',
+    scopeId: 'chat-completed-worker',
     sourceRefs: [{ kind: 'world_info', uid: 'char-a', displayName: '角色A', content: 'A 是骑士。' }],
     ruleTemplateId: 'airp-character-default',
     depth: 0,
@@ -126,6 +180,7 @@ test('completed worker cache key ignores source ref metadata noise', async () =>
   const app = await startTtAgentPlus727(createWindowRef(), {
     autoMount: false,
     getContext: () => ({
+      chatId: 'chat-stable-source',
       extensionSettings: {},
       setExtensionPrompt: () => {}
     }),
@@ -140,6 +195,7 @@ test('completed worker cache key ignores source ref metadata noise', async () =>
 
   app.dispatcher.enqueue({
     id: 'stable-source-1',
+    scopeId: 'chat-stable-source',
     sourceRefs: [{ ...stableSource, selectedAt: 'first-pass' }],
     ruleTemplateId: 'airp-character-default',
     depth: 0,
@@ -149,6 +205,7 @@ test('completed worker cache key ignores source ref metadata noise', async () =>
 
   app.dispatcher.enqueue({
     id: 'stable-source-2',
+    scopeId: 'chat-stable-source',
     sourceRefs: [{ ...stableSource, selectedAt: 'second-pass' }],
     ruleTemplateId: 'airp-character-default',
     depth: 0,
@@ -166,6 +223,7 @@ test('manual source dispatch creates a worker task, cache entry, and prompt inje
   const app = await startTtAgentPlus727(createWindowRef(), {
     autoMount: false,
     getContext: () => ({
+      chatId: 'chat-manual-source',
       extensionSettings: {},
       setExtensionPrompt: (...args) => prompts.push(args)
     }),
@@ -212,6 +270,29 @@ test('manual source dispatch rejects empty content without enqueueing a task', a
     entry.level === 'warn'
     && entry.channel === 'dispatcher'
     && entry.message === '手动派发缺少资料内容'
+  )));
+});
+
+test('manual source dispatch fails closed without a stable chat identity', async () => {
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => ({
+      characterId: 'shared-character',
+      extensionSettings: {}
+    })
+  });
+
+  const task = await app.dispatchManualSource({
+    displayName: '不得进入全局的数据',
+    content: '同一角色卡可以有多个聊天。'
+  });
+
+  assert.equal(task, null);
+  assert.equal(app.state.tasks.length, 0);
+  assert.equal((await app.cache.list()).length, 0);
+  assert.ok(app.debug.entries().some((entry) => (
+    entry.channel === 'dispatcher'
+    && entry.message.includes('聊天标识')
   )));
 });
 
@@ -431,6 +512,7 @@ test('newest concurrent prompt refresh owns the final prompt', async () => {
     autoMount: false,
     cacheStore,
     getContext: () => ({
+      chatId: 'chat-concurrent-refresh',
       extensionSettings: {},
       setExtensionPrompt: (...args) => prompts.push(args)
     })
@@ -441,13 +523,53 @@ test('newest concurrent prompt refresh owns the final prompt', async () => {
   await waitForMicrotasks();
   const secondRefresh = app.refreshPromptInjection();
   await waitForMicrotasks();
-  secondList.resolve([createCacheEntry('newer', { processedText: '较新的提示词' })]);
+  secondList.resolve([createCacheEntry('newer', {
+    scopeId: 'chat-concurrent-refresh',
+    processedText: '较新的提示词'
+  })]);
   await secondRefresh;
-  firstList.resolve([createCacheEntry('older', { processedText: '较旧的提示词' })]);
+  firstList.resolve([createCacheEntry('older', {
+    scopeId: 'chat-concurrent-refresh',
+    processedText: '较旧的提示词'
+  })]);
   await firstRefresh;
 
   assert.match(prompts.at(-1)[1], /较新的提示词/);
   assert.doesNotMatch(prompts.at(-1)[1], /较旧的提示词/);
+});
+
+test('prompt refresh cannot commit after the active chat changes', async () => {
+  const prompts = [];
+  const pendingEntries = createDeferred();
+  let deferRefresh = false;
+  let chatId = 'chat-a';
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    cacheStore: {
+      async list() {
+        return deferRefresh ? pendingEntries.promise : [];
+      }
+    },
+    getContext: () => ({
+      getCurrentChatId: () => chatId,
+      extensionSettings: {},
+      setExtensionPrompt: (...args) => prompts.push(args)
+    })
+  });
+
+  deferRefresh = true;
+  const refresh = app.refreshPromptInjection();
+  await waitForMicrotasks();
+  chatId = 'chat-b';
+  pendingEntries.resolve([createCacheEntry('chat-a-entry', {
+    scopeId: 'chat-a',
+    processedText: '聊天 A 的私有资料'
+  })]);
+
+  const block = await refresh;
+
+  assert.equal(block, '');
+  assert.equal(prompts.length, 0);
 });
 
 test('stale task refresh cannot invalidate a current cache-hit prompt refresh', async () => {
@@ -2132,13 +2254,14 @@ test('getContext option overrides host window fallback', async () => {
   const app = await startTtAgentPlus727(windowRef, {
     autoMount: false,
     getContext: () => ({
+      chatId: 'chat-context-option',
       extensionSettings: {},
       setExtensionPrompt: (...args) => prompts.push(args)
     }),
     extensionPromptTypes: { IN_PROMPT: 9 }
   });
 
-  await app.cache.put(createCacheEntry('entry-1'));
+  await app.cache.put(createCacheEntry('entry-1', { scopeId: 'chat-context-option' }));
   const block = await app.refreshPromptInjection();
 
   assert.match(block, /cached result/);
@@ -2245,6 +2368,7 @@ test('promptInjectionEnabled false clears prompt', async () => {
   const app = await startTtAgentPlus727(createWindowRef(), {
     autoMount: false,
     getContext: () => ({
+      chatId: 'chat-injection-disabled',
       extensionSettings: {
         [SETTINGS_KEY]: { promptInjectionEnabled: false }
       },
@@ -2252,7 +2376,7 @@ test('promptInjectionEnabled false clears prompt', async () => {
     })
   });
 
-  await app.cache.put(createCacheEntry('entry-1'));
+  await app.cache.put(createCacheEntry('entry-1', { scopeId: 'chat-injection-disabled' }));
 
   const block = await app.refreshPromptInjection();
 
@@ -2439,6 +2563,7 @@ test('refreshPromptInjection clears prompt when cache list fails', async () => {
       }
     },
     getContext: () => ({
+      chatId: 'chat-cache-list-failure',
       extensionSettings: {},
       setExtensionPrompt: (...args) => prompts.push(args)
     })

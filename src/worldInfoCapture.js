@@ -22,7 +22,7 @@ export function normalizeWorldInfoScan(eventData, options = {}) {
   const budget = isRecord(source.budget) ? source.budget : {};
 
   return {
-    scopeId: nonEmptyString(options.scopeId, 'global'),
+    scopeId: stableChatId(options.scopeId),
     capturedAt: now(),
     entries,
     totalTokens: entries.reduce((total, entry) => total + entry.tokenEstimate, 0),
@@ -50,8 +50,13 @@ export function subscribeWorldInfoScans({ getContext, onCapture, debug, now } = 
   const listener = async (eventData) => {
     try {
       const currentContext = safeGetContext(getContext, debug) ?? context;
+      const scopeId = resolveWorldInfoScopeId(currentContext);
+      if (!scopeId) {
+        warn(debug, 'world-info', '缺少稳定聊天标识，已拒绝捕获世界书数据', {});
+        return;
+      }
       const capture = normalizeWorldInfoScan(eventData, {
-        scopeId: resolveWorldInfoScopeId(currentContext),
+        scopeId,
         now
       });
       if (typeof onCapture === 'function') {
@@ -199,16 +204,14 @@ function parseMapKey(mapKey, knownUid) {
 }
 
 export function resolveWorldInfoScopeId(context) {
-  if (!isRecord(context)) return 'global';
+  if (!isRecord(context)) return '';
   try {
-    const currentChatId = context.getCurrentChatId?.();
-    if (currentChatId !== null && currentChatId !== undefined && currentChatId !== '') {
-      return String(currentChatId);
-    }
+    const currentChatId = stableChatId(context.getCurrentChatId?.());
+    if (currentChatId) return currentChatId;
   } catch {
     // Fall through to stable context fields.
   }
-  return firstNonEmptyString(context.chatId, context.groupId, context.characterId, 'global');
+  return stableChatId(context.chatId);
 }
 
 function safeGetContext(getContext, debug) {
@@ -227,6 +230,11 @@ function firstNonEmptyString(...values) {
     if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   }
   return '';
+}
+
+function stableChatId(value) {
+  const id = firstNonEmptyString(value);
+  return id && id !== 'global' ? id : '';
 }
 
 function nonEmptyString(value, fallback) {

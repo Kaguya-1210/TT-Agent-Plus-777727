@@ -447,6 +447,19 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     const requestedOptions = options && typeof options === 'object' ? options : {};
     if (!isPendingWorldInfoScanRefreshCurrent(requestedOptions)) return '';
     const effectiveOptions = resolvePromptRefreshOptions(requestedOptions);
+    const activeScopeId = currentScopeId();
+    const requestedScopeId = safeString(safeProperty(effectiveOptions, 'scopeId'));
+    if (!activeScopeId || (requestedScopeId && requestedScopeId !== activeScopeId)) {
+      promptRefreshSequence += 1;
+      debug.warn('prompt', '缺少当前聊天标识或请求了其他聊天作用域，已清空提示词注入', {
+        hasActiveScope: Boolean(activeScopeId),
+        requestedForeignScope: Boolean(requestedScopeId && requestedScopeId !== activeScopeId)
+      });
+      setProcessedPrompt('');
+      state = { ...state, lastInjection: { count: 0, length: 0, error: 'invalid_chat_scope' } };
+      render();
+      return '';
+    }
     const worldInfoContextCurrent = isPromptRefreshContextCurrent(effectiveOptions);
     if (hasExplicitWorldInfoRefreshContext(requestedOptions) && !worldInfoContextCurrent) return '';
     const refreshSequence = ++promptRefreshSequence;
@@ -454,7 +467,12 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     try {
       entries = await cache.list();
     } catch (error) {
-      if (!canCommitPromptRefresh(refreshSequence, effectiveOptions, worldInfoContextCurrent)) return '';
+      if (!canCommitPromptRefresh(
+        refreshSequence,
+        effectiveOptions,
+        worldInfoContextCurrent,
+        activeScopeId
+      )) return '';
       const message = errorMessage(error);
       debug.error('prompt', 'cache list failed', { error: message });
       state = {
@@ -468,7 +486,12 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     }
 
     if (!state.settings.promptInjectionEnabled) {
-      if (!canCommitPromptRefresh(refreshSequence, effectiveOptions, worldInfoContextCurrent)) return '';
+      if (!canCommitPromptRefresh(
+        refreshSequence,
+        effectiveOptions,
+        worldInfoContextCurrent,
+        activeScopeId
+      )) return '';
       state = { ...state, cacheEntries: entries };
       setProcessedPrompt('');
       state = { ...state, lastInjection: { count: 0, length: 0 } };
@@ -482,9 +505,6 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     const activeSourceRefs = hasExplicitSourceRefs
       ? (Array.isArray(effectiveOptions.activeSourceRefs) ? effectiveOptions.activeSourceRefs : [])
       : (hasCapturedScan ? activeWorldInfoSourceRefs() : undefined);
-    const scopeId = typeof effectiveOptions.scopeId === 'string' && effectiveOptions.scopeId
-      ? effectiveOptions.scopeId
-      : currentScopeId();
     const ruleScopedEntries = worldInfoContextCurrent
       ? filterCacheEntriesByWorldInfoRule(entries, effectiveOptions)
       : entries.filter((entry) => !isWorldInfoCacheEntry(entry));
@@ -494,7 +514,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     const selected = selectRelevantCacheEntries(ruleScopedEntries, {
       maxTokens: state.settings.promptBlockMaxTokens,
       ...(shouldFilterSources ? { activeSourceRefs: selectionSourceRefs } : {}),
-      scopeId,
+      scopeId: activeScopeId,
       promptVersion: PROMPT_BLOCK_VERSION
     });
     const block = buildProcessedContextBlock(selected);
@@ -503,7 +523,12 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     const bypassed = state.settings.worldInfoBypassEnabled && effectiveOptions.eventData
       ? removeCoveredWorldInfoEntries(effectiveOptions.eventData, coveredSourceRefs)
       : 0;
-    if (!canCommitPromptRefresh(refreshSequence, effectiveOptions, worldInfoContextCurrent)) return block;
+    if (!canCommitPromptRefresh(
+      refreshSequence,
+      effectiveOptions,
+      worldInfoContextCurrent,
+      activeScopeId
+    )) return '';
     state = { ...state, cacheEntries: entries };
     setProcessedPrompt(block);
     state = {
@@ -606,12 +631,18 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
       render();
       return null;
     }
+    const scopeId = currentScopeId();
+    if (!scopeId) {
+      debug.warn('dispatcher', '缺少稳定聊天标识，已拒绝手动派发', {});
+      render();
+      return null;
+    }
 
     manualTaskCounter += 1;
     const ruleTemplateId = resolveRuleTemplateId(input.ruleTemplateId);
     const task = dispatcher.enqueue({
       id: `manual-${Date.now()}-${manualTaskCounter}`,
-      scopeId: currentScopeId(),
+      scopeId,
       sourceRefs: [source],
       ruleTemplateId,
       depth: 0,
@@ -632,7 +663,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     if (destroyed) return emptyCapturedDispatchResult({ staleCapture: true });
     const captureSnapshot = cloneValue(state.worldInfoCapture);
     const captureSequence = captureSnapshot?.scanSequence;
-    const captureScopeId = captureSnapshot?.scopeId ?? 'global';
+    const captureScopeId = safeString(captureSnapshot?.scopeId);
     const capturedSources = Array.isArray(captureSnapshot?.entries) ? captureSnapshot.entries : [];
     const ruleTemplateId = resolveRuleTemplateId(input.ruleTemplateId);
     const ruleTemplate = state.settings.rules.find((item) => item?.id === ruleTemplateId) ?? {};
@@ -1218,12 +1249,10 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
 
   function currentScopeId() {
     try {
-      const scopeId = resolveWorldInfoScopeId(getHostContext?.());
-      if (scopeId !== 'global') return scopeId;
+      return safeString(resolveWorldInfoScopeId(getHostContext?.()));
     } catch {
-      // Fall back to the last captured scope.
+      return '';
     }
-    return state.worldInfoCapture?.scopeId ?? 'global';
   }
 
   function activateWorldInfoPromptRule(rule, scanSequence) {
@@ -1383,11 +1412,18 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     return !destroyed && currentScan && currentCatalog && currentPromptContext;
   }
 
-  function canCommitPromptRefresh(refreshSequence, options = {}, requireWorldInfoContext = true) {
+  function canCommitPromptRefresh(
+    refreshSequence,
+    options = {},
+    requireWorldInfoContext = true,
+    expectedScopeId = ''
+  ) {
     const currentRefresh = refreshSequence === promptRefreshSequence;
     return Boolean(
       !destroyed
       && currentRefresh
+      && expectedScopeId
+      && currentScopeId() === expectedScopeId
       && isPendingWorldInfoScanRefreshCurrent(options)
       && (!requireWorldInfoContext || isPromptRefreshContextCurrent(options))
     );
@@ -1406,7 +1442,8 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
 
   function isDispatchCaptureReady(capture, captureSequence, scopeId) {
     return Boolean(
-      capture?.capturedAt != null
+      scopeId
+      && capture?.capturedAt != null
       && capture?.identityReady === true
       && Number.isInteger(captureSequence)
       && captureSequence === worldInfoScanSequence
@@ -1419,7 +1456,8 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
 
   function isCaptureCurrent(captureSequence, scopeId) {
     return Boolean(
-      !destroyed
+      scopeId
+      && !destroyed
       && captureSequence === worldInfoScanSequence
       && state.worldInfoCapture?.scanSequence === captureSequence
       && state.worldInfoCapture?.identityReady === true
@@ -1674,6 +1712,7 @@ function createCacheEntryFromCompletedTask(task, settings) {
   const processedText = result.processedText;
   const timestamp = task.completedAt ?? new Date().toISOString();
   const descriptor = createTaskCacheDescriptor(task, settings);
+  if (!descriptor.scopeId) return null;
   const tokenEstimate = Number.isFinite(result.tokenEstimate) && result.tokenEstimate >= 0
     ? result.tokenEstimate
     : estimateTokens(processedText);
@@ -1715,7 +1754,7 @@ function createTaskCacheDescriptor(task, settings) {
     ? settings.worldInfoRules.find((item) => item?.id === worldInfoRuleId)
     : null;
   return {
-    scopeId: task?.scopeId ?? task?.chatId ?? 'global',
+    scopeId: safeString(task?.scopeId) || safeString(task?.chatId),
     sourceHash: hashSourceRefs(sourceRefs),
     ruleTemplateId: task?.ruleTemplateId ?? 'unknown-rule',
     ruleVersion: rule?.version ?? task?.ruleVersion ?? 1,
@@ -1741,10 +1780,16 @@ function cacheEntryMatchesDescriptor(entry, descriptor) {
     modelProfileId: entry?.modelProfileId,
     promptVersion: entry?.promptVersion
   };
+  let expectedStoredKey;
+  try {
+    expectedStoredKey = createCacheKey(storedDescriptor);
+  } catch {
+    return false;
+  }
   return Boolean(
     isUsableProcessedCacheEntry(entry)
     && entry.sourceHash === hashSourceRefs(entry.sourceRefs)
-    && entry.key === createCacheKey(storedDescriptor)
+    && entry.key === expectedStoredKey
     && entry.scopeId === descriptor.scopeId
     && entry.sourceHash === descriptor.sourceHash
     && entry.ruleTemplateId === descriptor.ruleTemplateId

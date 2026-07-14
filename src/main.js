@@ -145,8 +145,13 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
   let state = createInitialState({ settings: bridge.loadSettings() });
   const cache = options.cacheStore
     ?? createProcessedCacheStore(options.cacheDriver ?? createDefaultCacheDriver(hostWindow, debug));
+  let allCacheEntries = [];
   try {
-    state = { ...state, cacheEntries: await cache.list() };
+    allCacheEntries = await cache.list();
+    state = {
+      ...state,
+      cacheEntries: cacheEntriesForScope(allCacheEntries, currentScopeId())
+    };
   } catch (error) {
     debug.warn('cache', '启动时读取缓存失败', { error: errorMessage(error) });
   }
@@ -466,6 +471,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     let entries;
     try {
       entries = await cache.list();
+      allCacheEntries = entries;
     } catch (error) {
       if (!canCommitPromptRefresh(
         refreshSequence,
@@ -492,7 +498,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
         worldInfoContextCurrent,
         activeScopeId
       )) return '';
-      state = { ...state, cacheEntries: entries };
+      state = { ...state, cacheEntries: cacheEntriesForScope(entries, activeScopeId) };
       setProcessedPrompt('');
       state = { ...state, lastInjection: { count: 0, length: 0 } };
       render();
@@ -529,7 +535,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
       worldInfoContextCurrent,
       activeScopeId
     )) return '';
-    state = { ...state, cacheEntries: entries };
+    state = { ...state, cacheEntries: cacheEntriesForScope(entries, activeScopeId) };
     setProcessedPrompt(block);
     state = {
       ...state,
@@ -1079,7 +1085,7 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
     try {
       mounted = mountPanel({
         documentRef: hostWindow.document,
-        getState: () => state,
+        getState: getStateSnapshot,
         getDebugEntries: () => debug.entries(),
         onTab: setTab,
         onClose: closePanel,
@@ -1162,8 +1168,15 @@ async function startTtAgentPlus727Internal(hostWindow, options) {
   debug.info('startup', 'TT-Agent-Plus-727 已启动', { moduleId: MODULE_ID });
 
   function getStateSnapshot() {
+    const activeScopeId = currentScopeId();
     const snapshot = cloneValue(state);
-    snapshot.tasks = cloneValue(dispatcher.listTasks());
+    snapshot.tasks = cloneValue(dispatcher.listTasks().filter(
+      (task) => safeString(task?.scopeId) === activeScopeId
+    ));
+    snapshot.cacheEntries = cloneValue(cacheEntriesForScope(allCacheEntries, activeScopeId));
+    if (!activeScopeId || safeString(snapshot.worldInfoCapture?.scopeId) !== activeScopeId) {
+      snapshot.worldInfoCapture = emptyWorldInfoCaptureProjection();
+    }
     return snapshot;
   }
 
@@ -1676,6 +1689,23 @@ function safeHasOwn(value, key) {
 
 function safeString(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function cacheEntriesForScope(entries, scopeId) {
+  const activeScopeId = safeString(scopeId);
+  if (!activeScopeId || !Array.isArray(entries)) return [];
+  return entries.filter((entry) => safeString(entry?.scopeId) === activeScopeId);
+}
+
+function emptyWorldInfoCaptureProjection() {
+  return {
+    scopeId: '',
+    capturedAt: null,
+    entries: [],
+    totalTokens: 0,
+    budget: { current: 0, overflowed: false },
+    scan: { current: 0, next: 0, loopCount: 0 }
+  };
 }
 
 function safeUid(value) {

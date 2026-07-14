@@ -399,6 +399,77 @@ test('world-info cache never crosses chat scope', async () => {
   assert.equal(prompts.at(-1)[1], '');
 });
 
+test('cache and task projections follow the active chat and restore on return', async () => {
+  let chatId = 'chat-a';
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    getContext: () => ({
+      getCurrentChatId: () => chatId,
+      extensionSettings: {},
+      setExtensionPrompt() {}
+    })
+  });
+  await app.cache.put(createCacheEntry('cache-a', {
+    scopeId: 'chat-a',
+    processedText: '聊天 A 缓存'
+  }));
+  await app.cache.put(createCacheEntry('cache-b', {
+    scopeId: 'chat-b',
+    processedText: '聊天 B 缓存'
+  }));
+  await app.refreshPromptInjection();
+  await app.dispatchManualSource({ displayName: 'A 任务', content: 'A 的资料' });
+
+  assert.deepEqual(app.state.cacheEntries.map((entry) => entry.scopeId), ['chat-a', 'chat-a']);
+  assert.equal(app.state.tasks.length, 1);
+  assert.equal(app.state.tasks[0].scopeId, 'chat-a');
+
+  chatId = 'chat-b';
+  await app.refreshPromptInjection();
+
+  assert.deepEqual(app.state.cacheEntries.map((entry) => entry.scopeId), ['chat-b']);
+  assert.equal(app.state.tasks.length, 0);
+
+  chatId = 'chat-a';
+
+  assert.deepEqual(app.state.cacheEntries.map((entry) => entry.scopeId), ['chat-a', 'chat-a']);
+  assert.equal(app.state.tasks.length, 1);
+  assert.equal(app.state.tasks[0].scopeId, 'chat-a');
+});
+
+test('captured world-info projection is hidden outside its chat and restored on return', async () => {
+  const eventSource = createEventSource();
+  let chatId = 'chat-a';
+  const context = {
+    getCurrentChatId: () => chatId,
+    eventSource,
+    eventTypes: { WORLDINFO_SCAN_DONE: 'worldinfo_scan_done' },
+    extensionSettings: {},
+    setExtensionPrompt() {}
+  };
+  const app = await startTtAgentPlus727(createWindowRef(), {
+    autoMount: false,
+    worldInfoRepository: createCatalogRepository('Lore', { entries: [{ uid: '1' }] }),
+    getContext: () => context
+  });
+  await eventSource.emit('worldinfo_scan_done', createWorldInfoScanEvent([
+    ['Lore.1', { uid: 1, content: '聊天 A 世界书', disable: false }]
+  ]));
+
+  assert.equal(app.state.worldInfoCapture.scopeId, 'chat-a');
+  assert.equal(app.state.worldInfoCapture.entries.length, 1);
+
+  chatId = 'chat-b';
+
+  assert.equal(app.state.worldInfoCapture.scopeId, '');
+  assert.equal(app.state.worldInfoCapture.entries.length, 0);
+
+  chatId = 'chat-a';
+
+  assert.equal(app.state.worldInfoCapture.scopeId, 'chat-a');
+  assert.equal(app.state.worldInfoCapture.entries.length, 1);
+});
+
 test('empty world-info scan clears the previous processed prompt', async () => {
   const prompts = [];
   const eventSource = createEventSource();
@@ -2194,11 +2265,15 @@ test('default browser cache survives app restart through localStorage', async ()
   const windowRef = createWindowRef({ localStorage });
   const options = {
     autoMount: false,
-    getContext: () => ({ extensionSettings: {}, setExtensionPrompt() {} }),
+    getContext: () => ({
+      chatId: 'chat-persistent',
+      extensionSettings: {},
+      setExtensionPrompt() {}
+    }),
     extensionPromptTypes: { IN_PROMPT: 7 }
   };
   const first = await startTtAgentPlus727(windowRef, options);
-  await first.cache.put(createCacheEntry('persistent-entry'));
+  await first.cache.put(createCacheEntry('persistent-entry', { scopeId: 'chat-persistent' }));
 
   const second = await startTtAgentPlus727(windowRef, options);
 
